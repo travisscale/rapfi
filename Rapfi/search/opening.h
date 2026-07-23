@@ -23,6 +23,8 @@
 #include "../core/types.h"
 #include "../game/board.h"
 
+#include <vector>
+
 namespace Opening {
 
 /// Try to probe a opening according to the certain rule.

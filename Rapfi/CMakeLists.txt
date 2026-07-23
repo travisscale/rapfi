@@ -352,9 +352,8 @@ if(EMSCRIPTEN)
         string(CONCAT WASM_OUTPUT_NAME ${WASM_OUTPUT_NAME} "-multi")
         target_compile_options(rapfi PRIVATE "-pthread")
         string(CONCAT EMCC_FLAGS ${EMCC_FLAGS}
-            "-s USE_PTHREADS=1 "
+            "-pthread "
             "-s PROXY_TO_PTHREAD=1 "
-            "-s TEXTDECODER=0 "
         )
     endif()
 

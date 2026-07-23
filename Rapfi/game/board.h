@@ -30,6 +30,7 @@
 #include <array>
 #include <cassert>
 #include <memory>
+#include <string>
 
 namespace Search {
 class SearchThread;
