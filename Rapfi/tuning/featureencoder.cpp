@@ -22,6 +22,8 @@
 #include "../game/board.h"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace {
 
@@ -46,13 +48,116 @@ void packBitsToBytes(const uint8_t *bits, size_t numBits, uint8_t *bytes)
         *bytes |= bits[bitIdx] << (7 - bitIdx);
 }
 
+uint16_t quantizePolicy(float policy)
+{
+    return uint16_t(std::clamp<int>(policy * UINT16_MAX, 0, UINT16_MAX));
+}
+
+bool isUnavailableOrMate(Eval eval)
+{
+    // Keep mate-distance scores categorical on either sign, using Rapfi's
+    // canonical mate band rather than the Trainer reader's configurable cutoff.
+    return eval == VALUE_NONE || eval >= VALUE_MATE_IN_MAX_PLY || eval <= VALUE_MATED_IN_MAX_PLY;
+}
+
+size_t policyIndex(Pos move, int boardsize, size_t numCells)
+{
+    return move == Pos::PASS ? numCells : move.y() * boardsize + move.x();
+}
+
 }  // namespace
 
 namespace Tuning {
 
+void encodePolicyTarget(Pos                       bestMove,
+                        Eval                      bestEval,
+                        const MovePayload        &payload,
+                        int                       boardsize,
+                        size_t                    numCells,
+                        const PolicyTargetConfig &config,
+                        uint16_t                 *dst,
+                        FeatureEncodeScratch     &scratch)
+{
+    std::fill_n(dst, numCells + 1, uint16_t(0));
+
+    // Preserve dense targets exactly, including their own-board pass index.
+    size_t ownCells = boardsize * boardsize;
+    if (auto *policy = std::get_if<PolicyArrayF32>(&payload);
+        policy && policy->size() >= ownCells + 1) {
+        for (size_t i = 0; i < ownCells; i++)
+            dst[i] = quantizePolicy((*policy)[i]);
+        dst[numCells] = quantizePolicy((*policy)[ownCells]);
+        return;
+    }
+    if (auto *policy = std::get_if<PolicyArrayI16>(&payload);
+        policy && policy->size() >= ownCells + 1) {
+        constexpr float InvScale = 1.0f / 32767;
+        for (size_t i = 0; i < ownCells; i++)
+            dst[i] = quantizePolicy((*policy)[i] * InvScale);
+        dst[numCells] = quantizePolicy((*policy)[ownCells] * InvScale);
+        return;
+    }
+
+    auto writeOneHot = [&]() {
+        if (bestMove == Pos::PASS || bestMove.isInBoard(boardsize, boardsize))
+            dst[policyIndex(bestMove, boardsize, numCells)] = UINT16_MAX;
+    };
+
+    const ExtraPVArray *pvs = extraPVs(payload);
+    if (!config.useMultiPV() || !pvs || isUnavailableOrMate(bestEval)
+        || !std::isfinite(config.multiPVTemperature) || !std::isfinite(config.evalScalingFactor)
+        || config.evalScalingFactor <= 0.0f) {
+        writeOneHot();
+        return;
+    }
+
+    const size_t numMoves = pvs->size() + 1;
+    scratch.policyWeights.resize(numMoves);
+
+    float maxWinRate = -std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < numMoves; i++) {
+        Pos  move = i == 0 ? bestMove : (*pvs)[i - 1].move;
+        Eval eval = i == 0 ? bestEval : (*pvs)[i - 1].eval;
+
+        if ((move != Pos::PASS && !move.isInBoard(boardsize, boardsize))
+            || isUnavailableOrMate(eval)) {
+            writeOneHot();
+            return;
+        }
+
+        // Duplicate PV moves are malformed; retain a normalized, deterministic
+        // target by falling back instead of overwriting part of the softmax mass.
+        for (size_t j = 0; j < i; j++) {
+            Pos previousMove = j == 0 ? bestMove : (*pvs)[j - 1].move;
+            if (move == previousMove) {
+                writeOneHot();
+                return;
+            }
+        }
+
+        float winRate = 1.0f / (1.0f + std::exp(-float(eval) / config.evalScalingFactor));
+        scratch.policyWeights[i] = winRate;
+        maxWinRate               = std::max(maxWinRate, winRate);
+    }
+
+    float weightSum = 0.0f;
+    for (float &weight : scratch.policyWeights) {
+        weight = std::exp((weight - maxWinRate) / config.multiPVTemperature);
+        weightSum += weight;
+    }
+
+    for (size_t i = 0; i < numMoves; i++) {
+        Pos move = i == 0 ? bestMove : (*pvs)[i - 1].move;
+        dst[policyIndex(move, boardsize, numCells)] =
+            quantizePolicy(scratch.policyWeights[i] / weightSum);
+    }
+}
+
 void encodeEntryFeatures(const Board                               &board,
                          Pos                                        bestMove,
+                         Eval                                       bestEval,
                          const MovePayload                         &payload,
+                         const PolicyTargetConfig                  &policyConfig,
                          Result                                     result,
                          const std::optional<std::array<float, 3>> &softValueTarget,
                          size_t                                     numCells,
@@ -67,6 +172,14 @@ void encodeEntryFeatures(const Board                               &board,
     scratch.selfPlane.assign(numCells, 0);
     scratch.oppoPlane.assign(numCells, 0);
     Color self = board.sideToMove(), oppo = ~self;
+    encodePolicyTarget(bestMove,
+                       bestEval,
+                       payload,
+                       boardsize,
+                       numCells,
+                       policyConfig,
+                       dst.policyTarget,
+                       scratch);
     FOR_EVERY_POSITION(&board, pos)
     {
         int posIdx                   = pos.y() * boardsize + pos.x();
@@ -94,19 +207,7 @@ void encodeEntryFeatures(const Board                               &board,
             dst.sparseU16[1 * numCells + posIdx] =
                 oppo == BLACK ? board.pcode<BLACK>(pos) : board.pcode<WHITE>(pos);
         }
-
-        // Write the policy target
-        dst.policyTarget[posIdx] = std::clamp<int>(
-            policyTargetOf(payload, bestMove, boardsize, pos) * UINT16_MAX,
-            0,
-            UINT16_MAX);
     }
-
-    // Write the policy target of the PASS move
-    dst.policyTarget[numCells] = std::clamp<int>(
-        policyTargetOf(payload, bestMove, boardsize, Pos::PASS) * UINT16_MAX,
-        0,
-        UINT16_MAX);
 
     // Write the packed binary planes
     packBitsToBytes(scratch.inBoardPlane.data(), numCells, dst.binaryPacked + 0 * numBytes);

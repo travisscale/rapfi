@@ -19,6 +19,7 @@
 #pragma once
 
 #include "dataentry.h"
+#include "featureencoder.h"
 
 #include <functional>
 #include <memory>
@@ -167,7 +168,7 @@ private:
 class NumpyDataWriter : public DataWriter
 {
 public:
-    /// Constructs a numpy data writer.
+    /// Constructs a numpy data writer with the default one-hot policy fallback.
     /// @param dirpath The directory of output npz files
     /// @param maxNumEntriesPerFile The maximum number of entries per file
     /// @param flushCallback Optional callback, called with name of file wrote when flush
@@ -176,9 +177,16 @@ public:
                     size_t                           maxNumEntriesPerFile,
                     std::function<void(std::string)> flushCallback     = nullptr,
                     bool                             writeSparseInputs = true);
+    /// Constructs a numpy data writer with explicit policy-target conversion settings.
+    /// @param policyConfig Policy-target conversion settings
+    NumpyDataWriter(std::string                      dirpath,
+                    size_t                           maxNumEntriesPerFile,
+                    PolicyTargetConfig               policyConfig,
+                    std::function<void(std::string)> flushCallback     = nullptr,
+                    bool                             writeSparseInputs = true);
     ~NumpyDataWriter();
 
-    void writeEntry(const DataEntry &entry);
+    void writeEntry(const DataEntry &entry) override;
     /// Buffers a whole game and extracts the per-entry features with one
     /// incrementally-updated board per game (one move() per entry) at flush,
     /// instead of replaying every entry's position from an empty board.

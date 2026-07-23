@@ -28,6 +28,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <future>
 #include <iomanip>
@@ -47,7 +48,30 @@ size_t lengthOfShape(const std::vector<unsigned long> &shape, size_t startDim = 
     return length;
 }
 
-uint64_t entryHash(const DataEntry &entry)
+void hashPayload(Hash::XXHasher &hasher, const MovePayload &payload, bool hashExtraPVs)
+{
+    std::visit(
+        [&hasher, hashExtraPVs](const auto &v) {
+            using PayloadT = std::decay_t<decltype(v)>;
+            if constexpr (!std::is_same_v<PayloadT, std::monostate>) {
+                if constexpr (std::is_same_v<PayloadT, ExtraPVArray>) {
+                    if (!hashExtraPVs)
+                        return;
+                }
+                if (!v.empty())
+                    hasher(v.data(), v.size());
+            }
+        },
+        payload);
+}
+
+void hashPolicyConfig(Hash::XXHasher &hasher, const PolicyTargetConfig &config)
+{
+    hasher << config.multiPVTemperature;
+    hasher << config.evalScalingFactor;
+}
+
+uint64_t entryHash(const DataEntry &entry, const PolicyTargetConfig &policyConfig)
 {
     Hash::XXHasher hasher;
     hasher(entry.position.data(), entry.position.size());
@@ -56,19 +80,14 @@ uint64_t entryHash(const DataEntry &entry)
     hasher << entry.result;
     hasher << entry.move;
     hasher << entry.eval;
-    std::visit(
-        [&hasher](const auto &v) {
-            if constexpr (!std::is_same_v<std::decay_t<decltype(v)>, std::monostate>) {
-                if (!v.empty())
-                    hasher(v.data(), v.size());
-            }
-        },
-        entry.payload);
+    hashPayload(hasher, entry.payload, true);
+    if (policyConfig.useMultiPV())
+        hashPolicyConfig(hasher, policyConfig);
 
     return hasher;
 }
 
-uint64_t gameHash(const GameEntry &game)
+uint64_t gameHash(const GameEntry &game, const PolicyTargetConfig &policyConfig)
 {
     Hash::XXHasher hasher;
     hasher(game.initPosition.data(), game.initPosition.size());
@@ -78,7 +97,10 @@ uint64_t gameHash(const GameEntry &game)
     for (const auto &m : game.moveSequence) {
         hasher << m.move;
         hasher << m.eval;
+        hashPayload(hasher, m.payload, policyConfig.useMultiPV());
     }
+    if (policyConfig.useMultiPV())
+        hashPolicyConfig(hasher, policyConfig);
     return hasher;
 }
 
@@ -89,6 +111,8 @@ namespace Tuning {
 class NumpyDataWriter::DataBuffer
 {
 public:
+    explicit DataBuffer(PolicyTargetConfig policyConfig) : policyConfig(policyConfig) {}
+
     /// One buffered move of a game (an entry-to-be at flush time).
     struct BufferedMove
     {
@@ -122,7 +146,7 @@ public:
         game.moves.push_back({entry.move, entry.eval, entry.payload, softValueTarget});
         numBufferedEntries++;
 
-        hash ^= entryHash(entry);
+        hash ^= entryHash(entry, policyConfig);
     }
 
     void addGame(const GameEntry &gameEntry)
@@ -137,7 +161,7 @@ public:
             game.moves.push_back({m.move, m.eval, m.payload, std::nullopt});
         numBufferedEntries += gameEntry.moveSequence.size();
 
-        hash ^= gameHash(gameEntry);
+        hash ^= gameHash(gameEntry, policyConfig);
     }
 
     void asyncSaveToDir(std::string                      dirpath,
@@ -161,8 +185,13 @@ public:
              numEntries        = numBufferedEntries,
              finishedCallback  = std::move(finishedCallback),
              filename          = filename,
-             writeSparseInputs = writeSparseInputs]() mutable {
-                flushToStream(os, std::move(localGameBuffer), numEntries, writeSparseInputs);
+             writeSparseInputs = writeSparseInputs,
+             policyConfig      = policyConfig]() mutable {
+                flushToStream(os,
+                              std::move(localGameBuffer),
+                              numEntries,
+                              writeSparseInputs,
+                              policyConfig);
 
                 if (finishedCallback)
                     finishedCallback(filename);
@@ -180,11 +209,13 @@ private:
     size_t                         numBufferedEntries = 0;
     std::vector<BufferedGame>      gameBuffer;
     std::vector<std::future<void>> results;
+    const PolicyTargetConfig       policyConfig;
 
     static void flushToStream(std::ostream             &os,
                               std::vector<BufferedGame> localGameBuffer,
                               size_t                    numEntries,
-                              bool                      writeSparseInputs)
+                              bool                      writeSparseInputs,
+                              const PolicyTargetConfig &policyConfig)
     {
         // Find max board size
         int maxBoardSize = std::max_element(localGameBuffer.begin(),
@@ -251,7 +282,9 @@ private:
                 };
                 encodeEntryFeatures(board,
                                     bm.move,
+                                    bm.eval,
                                     bm.payload,
+                                    policyConfig,
                                     result,
                                     bm.softValueTarget,
                                     numCells,
@@ -309,12 +342,32 @@ NumpyDataWriter::NumpyDataWriter(std::string                      dirpath,
                                  size_t                           maxNumEntriesPerFile,
                                  std::function<void(std::string)> flushCallback,
                                  bool                             writeSparseInputs)
-    : buffer(std::make_unique<DataBuffer>())
+    : NumpyDataWriter(std::move(dirpath),
+                      maxNumEntriesPerFile,
+                      {},
+                      std::move(flushCallback),
+                      writeSparseInputs)
+{}
+
+NumpyDataWriter::NumpyDataWriter(std::string                      dirpath,
+                                 size_t                           maxNumEntriesPerFile,
+                                 PolicyTargetConfig               policyConfig,
+                                 std::function<void(std::string)> flushCallback,
+                                 bool                             writeSparseInputs)
+    : buffer(std::make_unique<DataBuffer>(policyConfig))
     , dirpath(dirpath)
     , maxNumEntriesPerFile(maxNumEntriesPerFile)
     , flushCallback(flushCallback)
     , writeSparseInputs(writeSparseInputs)
 {
+    if (!std::isfinite(policyConfig.multiPVTemperature) || policyConfig.multiPVTemperature < 0.0f)
+        throw std::invalid_argument("multi-pv policy temperature must be finite and nonnegative");
+    if (policyConfig.useMultiPV()
+        && (!std::isfinite(policyConfig.evalScalingFactor)
+            || policyConfig.evalScalingFactor <= 0.0f))
+        throw std::invalid_argument(
+            "multi-pv evaluation scaling factor must be finite and positive");
+
     // Create output directory
     ensureDir(dirpath);
 }
