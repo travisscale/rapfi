@@ -74,13 +74,8 @@ void Command::dataprep(int argc, char *argv[])
          cxxopts::value<Time>()->default_value("10000"))  //
         ("h,help", "Print dataprep usage");
 
-    try {
-        auto args = options.parse(argc, argv);
-
-        if (args.count("help")) {
-            std::cout << options.help() << std::endl;
-            std::exit(EXIT_SUCCESS);
-        }
+    parseSubcommandArguments(options, argc, argv, "dataprep argument",
+                             [&](const cxxopts::ParseResult &args) {
 
         if (!args.count("input"))
             throw std::invalid_argument("there must be at least one input dataset");
@@ -93,11 +88,7 @@ void Command::dataprep(int argc, char *argv[])
         outputPath           = args["output"].as<std::string>();
         maxNumEntriesPerFile = args["max-entries-per-file"].as<size_t>();
         reportInterval       = args["report-interval"].as<Time>();
-    }
-    catch (const std::exception &e) {
-        ERRORL("dataprep argument: " << e.what());
-        std::exit(EXIT_FAILURE);
-    }
+    });
 
     try {
         // Make path list
@@ -119,28 +110,7 @@ void Command::dataprep(int argc, char *argv[])
         }
 
         // Create data writer
-        switch (dataWriterType) {
-        case DataWriterType::PlainText:
-            dataWriter = std::make_unique<PlainTextDataWriter>(outputPath);
-            break;
-
-        case DataWriterType::SimpleBinary:
-            dataWriter = std::make_unique<SimpleBinaryDataWriter>(outputPath, false);
-            break;
-
-        case DataWriterType::SimpleBinaryLZ4:
-            dataWriter = std::make_unique<SimpleBinaryDataWriter>(outputPath, true);
-            break;
-
-        case DataWriterType::PackedBinary:
-            dataWriter = std::make_unique<PackedBinaryDataWriter>(outputPath, false);
-            break;
-
-        case DataWriterType::PackedBinaryLZ4:
-            dataWriter = std::make_unique<PackedBinaryDataWriter>(outputPath, true);
-            break;
-
-        case DataWriterType::Numpy:
+        if (dataWriterType == DataWriterType::Numpy)
             dataWriter = std::make_unique<NumpyDataWriter>(
                 outputPath,
                 maxNumEntriesPerFile,
@@ -148,8 +118,8 @@ void Command::dataprep(int argc, char *argv[])
                     MESSAGEL("Wrote npz to " << filename << ", saved " << ++numFilesWrote
                                              << " npz in total.");
                 });
-            break;
-        }
+        else
+            dataWriter = Tuning::makeDataWriter(dataWriterType, outputPath);
 
         // Start processing loop
         size_t    numEntriesProcessed = 0;

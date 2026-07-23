@@ -18,6 +18,8 @@
 
 #include "datawriter.h"
 
+#include "../command/argutils.h"
+
 #include "../config.h"
 #include "../core/compressor.h"
 #include "../core/hash.h"
@@ -783,6 +785,25 @@ void NumpyDataWriter::writeEntryWithSoftValueTarget(const DataEntry &entry,
     buffer->addEntry(entry, std::array<float, 3> {winprob, loseprob, drawprob});
     if (buffer->bufferedSize() >= maxNumEntriesPerFile)
         buffer->asyncSaveToDir(dirpath, flushCallback, writeSparseInputs);
+}
+
+
+std::unique_ptr<DataWriter> makeDataWriter(Command::DataWriterType dataWriterType,
+                                           const std::string      &outputPath)
+{
+    using Command::DataWriterType;
+    switch (dataWriterType) {
+    case DataWriterType::PlainText: return std::make_unique<PlainTextDataWriter>(outputPath);
+    case DataWriterType::SimpleBinary:
+        return std::make_unique<SimpleBinaryDataWriter>(outputPath, false);
+    case DataWriterType::SimpleBinaryLZ4:
+        return std::make_unique<SimpleBinaryDataWriter>(outputPath, true);
+    case DataWriterType::PackedBinary:
+        return std::make_unique<PackedBinaryDataWriter>(outputPath, false);
+    case DataWriterType::PackedBinaryLZ4:
+        return std::make_unique<PackedBinaryDataWriter>(outputPath, true);
+    default: assert(false && "Numpy writer is constructed at its call sites"); return nullptr;
+    }
 }
 
 }  // namespace Tuning

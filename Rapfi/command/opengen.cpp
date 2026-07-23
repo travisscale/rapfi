@@ -59,13 +59,8 @@ void Command::opengen(int argc, char *argv[])
     addPlayOptions(options);
     addOpengenOptions(options, cfg);
 
-    try {
-        auto args = options.parse(argc, argv);
-
-        if (args.count("help")) {
-            std::cout << options.help() << std::endl;
-            std::exit(EXIT_SUCCESS);
-        }
+    parseSubcommandArguments(options, argc, argv, "opengen argument",
+                             [&](const cxxopts::ParseResult &args) {
 
         if (args.count("output")) {
             // Open output file and change output stream
@@ -91,11 +86,7 @@ void Command::opengen(int argc, char *argv[])
             throw std::invalid_argument("there must be at least one opening to generate");
         if (boardsize < 5 || boardsize > MAX_BOARD_SIZE)
             throw std::invalid_argument("boardsize must be in range [5,22]");
-    }
-    catch (const std::exception &e) {
-        ERRORL("opengen argument: " << e.what());
-        std::exit(EXIT_FAILURE);
-    }
+    });
 
     // Set message mode to none if silence search is enabled
     if (silence)

@@ -58,6 +58,8 @@ static void                  setupSignalHandler(std::function<void()> handler)
 #endif
 }
 
+using namespace Tuning;
+
 namespace {
 
 std::vector<std::vector<Pos>> readOpenings(std::istream &is, int boardSize)
@@ -83,11 +85,8 @@ std::vector<std::vector<Pos>> readOpenings(std::istream &is, int boardSize)
     return ops;
 }
 
-}  // namespace
-
-using namespace Tuning;
-
-void Command::selfplay(int argc, char *argv[])
+/// All knobs of one selfplay run, parsed from the command line.
+struct SelfplayConfig
 {
     size_t                        numGames;
     size_t                        numThreads;
@@ -107,9 +106,153 @@ void Command::selfplay(int argc, char *argv[])
     bool                          silence;
     std::vector<std::vector<Pos>> openings;
     Opening::OpeningGenConfig     opengenCfg;
-    DataWriterType                dataWriterType;
+    Command::DataWriterType       dataWriterType;
     std::string                   outputPath;
-    std::unique_ptr<DataWriter>   dataWriter;
+};
+
+/// Put an opening on the fresh `board`: either an auto-generated (balanced) opening,
+/// or a random book opening under a random symmetry transform. No-op when neither
+/// source is configured (game starts from the empty board).
+void applyOpening(Board &board, const SelfplayConfig &cfg, PRNG &prng)
+{
+    if (cfg.generateOpening) {
+        Opening::OpeningGenerator og(board.size(), cfg.rule, cfg.opengenCfg, prng);
+
+        // Generate a valid opening
+        for (;;) {
+            bool balanced = og.next();
+
+            // If we want to generate a balanced opening, abandon those not balanced
+            if (!balanced && cfg.opengenCfg.balanceWindow > 0
+                && (cfg.opengenCfg.balance1Nodes > 0 || cfg.opengenCfg.balance2Nodes > 0))
+                continue;
+            else
+                break;
+        }
+
+        // Put opening
+        for (int i = 0; i < og.getBoard().ply(); i++) {
+            board.move(cfg.rule, og.getBoard().getHistoryMove(i));
+        }
+
+        if (!cfg.silence)
+            MESSAGEL("Put generated opening " << og.positionString());
+    }
+    else if (!cfg.openings.empty()) {
+        std::uniform_int_distribution<size_t> openingDis(0, cfg.openings.size() - 1);
+        std::uniform_int_distribution<int>    transformDis(0, TRANS_NB - 1);
+        size_t                                openingIdx = openingDis(prng);
+        TransformType                         transform  = TransformType(transformDis(prng));
+
+        // Apply opening pos
+        for (Pos pos : cfg.openings[openingIdx]) {
+            Pos transformedPos = applyTransform(pos, board.size(), transform);
+            board.move(cfg.rule, transformedPos);
+        }
+    }
+}
+
+/// Play one selfplay game on the prepared board (opening already applied) until the
+/// win/loss/draw adjudication triggers, and return the recorded game entry.
+GameEntry playOneGame(Board                            &board,
+                      const SelfplayConfig             &cfg,
+                      PRNG                             &prng,
+                      std::normal_distribution<double> &nodesDis)
+{
+    // Set search options and init
+    Search::SearchOptions options;
+    options.rule                = {cfg.rule, GameRule::FREEOPEN};
+    options.multiPV             = cfg.multipv;
+    options.balanceMode         = Search::SearchOptions::BALANCE_NONE;
+    options.disableOpeningQuery = true;
+    Search::Engine.clear(true);
+
+    // Setup game entry data
+    GameEntry gameEntry;
+    for (int i = 0; i < board.ply(); i++)
+        gameEntry.initPosition.push_back(board.getHistoryMove(i));
+    gameEntry.boardsize = board.size();
+    gameEntry.rule      = cfg.rule;
+
+    // Selfplay loop
+    Value searchValue = VALUE_ZERO;
+    int   drawCnt     = 0;
+    while (board.movesLeft() > 0) {
+        // Stop self-play game if force draw or board is full
+        if ((cfg.forceDrawPly && board.ply() >= cfg.forceDrawPly)
+            || (cfg.forceDrawPlyLeft && board.movesLeft() <= cfg.forceDrawPlyLeft))
+            break;
+
+        // Set search limits, make sure max nodes stays in [0, +inf)
+        int    steps      = board.ply() - (int)gameEntry.initPosition.size();
+        double nodesScale = std::pow(cfg.nodesDecay, std::min(steps, cfg.maxDecaySteps));
+        options.maxNodes  = std::max<uint64_t>((uint64_t)std::max(nodesDis(prng) * nodesScale, 0.0),
+                                              cfg.minNodes);
+        if (cfg.multipvDecaySteps > 0 && steps > 0 && steps % cfg.multipvDecaySteps == 0)
+            options.multiPV = std::max(1, options.multiPV - 1);
+
+        // Start thinking and wait for finish
+        Search::Engine.startThinking(board, options);
+        Search::Engine.waitForIdle();
+        auto mainThread = Search::Engine.main();
+
+        // We might have no legal move in Renju mode, which is regarded as loss
+        if (mainThread->rootMoves.empty()) {
+            searchValue = mated_in(0);
+            break;
+        }
+
+        // Record best move result
+        searchValue  = mainThread->rootMoves[0].value;
+        Pos bestMove = Search::Engine.ctx.bestMove;
+        gameEntry.moveSequence.push_back({bestMove, Eval(searchValue)});
+        if (options.multiPV > 1) {
+            auto &moveData   = gameEntry.moveSequence.back();
+            int   numPVMoves = std::min<int>(options.multiPV, mainThread->rootMoves.size());
+            moveData.tag = DataEntry::MoveDataTag(DataEntry::MULTIPV_BEGIN + numPVMoves - 2);
+            moveData.multiPvMoves = new PVMove[numPVMoves - 1];
+            for (int i = 1; i < numPVMoves; i++) {
+                auto &rm = mainThread->rootMoves[i];
+                assert(rm.pv[0] != bestMove);
+                moveData.multiPvMoves[i - 1] = {
+                    rm.pv[0],
+                    Eval(rm.value != VALUE_NONE ? rm.value : rm.previousValue)};
+            }
+        }
+
+        // Stop self-play game if win/loss is found
+        if (std::abs(searchValue) >= mate_in(cfg.matePly))
+            break;
+        if (cfg.noMateMultiPV && std::abs(searchValue) >= VALUE_MATE_IN_MAX_PLY)
+            options.multiPV = 1;
+
+        // Stop self-play game if draw adjudication
+        if (cfg.drawCount && std::abs(searchValue) <= cfg.drawValue) {
+            if (++drawCnt >= cfg.drawCount && board.ply() >= cfg.minDrawPly)
+                break;
+        }
+        else
+            drawCnt = 0;
+
+        // Make the move
+        board.move(cfg.rule, bestMove);
+    }
+
+    // Save game result (root samples)
+    Result result    = searchValue >= VALUE_MATE_IN_MAX_PLY    ? RESULT_WIN
+                       : searchValue <= VALUE_MATED_IN_MAX_PLY ? RESULT_LOSS
+                                                               : RESULT_DRAW;
+    gameEntry.result = board.sideToMove() == WHITE ? result : Result(RESULT_WIN - result);
+    return gameEntry;
+}
+
+/// Parse the selfplay command line into a SelfplayConfig (reading the opening book
+/// file if one is given). Exits after printing usage on --help or argument errors.
+SelfplayConfig parseSelfplayArguments(int argc, char *argv[])
+{
+    using namespace Command;
+
+    SelfplayConfig cfg;
 
     cxxopts::Options options("rapfi selfplay");
     options.add_options()  //
@@ -174,37 +317,32 @@ void Command::selfplay(int argc, char *argv[])
          cxxopts::value<Time>()->default_value("60000"))  //
         ("h,help", "Print selfplay usage");
     addPlayOptions(options);
-    addOpengenOptions(options, opengenCfg);
+    addOpengenOptions(options, cfg.opengenCfg);
 
-    try {
-        auto args = options.parse(argc, argv);
-
-        if (args.count("help")) {
-            std::cout << options.help() << std::endl;
-            std::exit(EXIT_SUCCESS);
-        }
+    parseSubcommandArguments(options, argc, argv, "selfplay argument",
+                             [&](const cxxopts::ParseResult &args) {
 
         if (args.count("output")) {
             // Open output file and change output stream
-            outputPath     = args["output"].as<std::string>();
-            dataWriterType = parseDataWriterType(args["output-type"].as<std::string>());
+            cfg.outputPath     = args["output"].as<std::string>();
+            cfg.dataWriterType = parseDataWriterType(args["output-type"].as<std::string>());
         }
 
         if (args.count("boardsize-min") || args.count("boardsize-max")) {
-            boardSizeMin = args["boardsize-min"].as<int>();
-            boardSizeMax = args["boardsize-max"].as<int>();
-            if (boardSizeMin > boardSizeMax)
+            cfg.boardSizeMin = args["boardsize-min"].as<int>();
+            cfg.boardSizeMax = args["boardsize-max"].as<int>();
+            if (cfg.boardSizeMin > cfg.boardSizeMax)
                 throw std::invalid_argument("invalid board size range");
         }
         else {
-            boardSizeMin = boardSizeMax = args["boardsize"].as<int>();
+            cfg.boardSizeMin = cfg.boardSizeMax = args["boardsize"].as<int>();
         }
-        if (boardSizeMin < 5 || boardSizeMax > 22)
+        if (cfg.boardSizeMin < 5 || cfg.boardSizeMax > 22)
             throw std::invalid_argument("board size must in range [5,22]");
 
         if (args.count("opening")) {
             std::string filename = args["opening"].as<std::string>();
-            if (boardSizeMin != boardSizeMax)
+            if (cfg.boardSizeMin != cfg.boardSizeMax)
                 throw std::invalid_argument(
                     "opening file can only be used with constant board size");
 
@@ -213,83 +351,68 @@ void Command::selfplay(int argc, char *argv[])
             if (!openingFile.is_open())
                 throw std::invalid_argument("unable to open opening file " + filename);
 
-            openings        = readOpenings(openingFile, boardSizeMin);
-            generateOpening = false;
+            cfg.openings        = readOpenings(openingFile, cfg.boardSizeMin);
+            cfg.generateOpening = false;
         }
         else {
-            opengenCfg      = parseOpengenConfig(args);
-            generateOpening = true;
+            cfg.opengenCfg      = parseOpengenConfig(args);
+            cfg.generateOpening = true;
         }
 
-        numGames          = args["number"].as<size_t>();
-        rule              = parseRule(args["rule"].as<std::string>());
-        numThreads        = std::max<size_t>(args["thread"].as<size_t>(), 1);
-        hashSizeMb        = std::max<size_t>(args["hashsize"].as<size_t>(), 1);
-        multipv           = std::max(args["multipv"].as<int>(), 1);
-        multipvDecaySteps = std::max(args["multipv-decay-steps"].as<int>(), 0);
-        noMateMultiPV     = args.count("no-multipv-after-mate");
-        meanNodes         = std::max(args["mean-nodes"].as<double>(), 0.0);
-        varNodes          = std::max(args["var-nodes"].as<double>(), 0.0);
-        nodesDecay        = std::min(args["nodes-decay"].as<double>(), 1.0);
-        maxDecaySteps     = std::max(args["max-nodes-decay-steps"].as<int>(), 0);
-        minNodes          = args["min-nodes"].as<uint64_t>();
-        matePly           = std::max(args["mate-ply"].as<int>(), 1);
-        drawValue         = args["draw-value"].as<int>();
-        drawCount         = args["draw-count"].as<int>();
-        minDrawPly        = args["min-draw-ply"].as<int>();
-        forceDrawPly      = args["force-draw-ply"].as<int>();
-        forceDrawPlyLeft  = args["force-draw-plyleft"].as<int>();
-        reportInterval    = args["report-interval"].as<Time>();
-        silence           = args.count("no-search-message");
+        cfg.numGames          = args["number"].as<size_t>();
+        cfg.rule              = parseRule(args["rule"].as<std::string>());
+        cfg.numThreads        = std::max<size_t>(args["thread"].as<size_t>(), 1);
+        cfg.hashSizeMb        = std::max<size_t>(args["hashsize"].as<size_t>(), 1);
+        cfg.multipv           = std::max(args["multipv"].as<int>(), 1);
+        cfg.multipvDecaySteps = std::max(args["multipv-decay-steps"].as<int>(), 0);
+        cfg.noMateMultiPV     = args.count("no-multipv-after-mate");
+        cfg.meanNodes         = std::max(args["mean-nodes"].as<double>(), 0.0);
+        cfg.varNodes          = std::max(args["var-nodes"].as<double>(), 0.0);
+        cfg.nodesDecay        = std::min(args["nodes-decay"].as<double>(), 1.0);
+        cfg.maxDecaySteps     = std::max(args["max-nodes-decay-steps"].as<int>(), 0);
+        cfg.minNodes          = args["min-nodes"].as<uint64_t>();
+        cfg.matePly           = std::max(args["mate-ply"].as<int>(), 1);
+        cfg.drawValue         = args["draw-value"].as<int>();
+        cfg.drawCount         = args["draw-count"].as<int>();
+        cfg.minDrawPly        = args["min-draw-ply"].as<int>();
+        cfg.forceDrawPly      = args["force-draw-ply"].as<int>();
+        cfg.forceDrawPlyLeft  = args["force-draw-plyleft"].as<int>();
+        cfg.reportInterval    = args["report-interval"].as<Time>();
+        cfg.silence           = args.count("no-search-message");
 
-        if (meanNodes <= 0)
+        if (cfg.meanNodes <= 0)
             throw std::invalid_argument("mean-nodes must be greater than 0");
-        if (matePly < 1)
+        if (cfg.matePly < 1)
             throw std::invalid_argument("mate-ply must be at least 1");
-        if (matePly >= MAX_MOVES)
+        if (cfg.matePly >= MAX_MOVES)
             throw std::invalid_argument("mate-ply must be less than " + std::to_string(MAX_MOVES));
-        if (drawValue < 0)
+        if (cfg.drawValue < 0)
             throw std::invalid_argument("draw-value must be at least 0");
-        if (drawCount < 0)
+        if (cfg.drawCount < 0)
             throw std::invalid_argument("draw-count must be at least 0");
-        if (minDrawPly < 0)
+        if (cfg.minDrawPly < 0)
             throw std::invalid_argument("min-draw-ply must be at least 0");
-        if (forceDrawPly < 0)
+        if (cfg.forceDrawPly < 0)
             throw std::invalid_argument("force-draw-ply must be at least 0");
-    }
-    catch (const std::exception &e) {
-        ERRORL("selfplay argument: " << e.what());
-        std::exit(EXIT_FAILURE);
-    }
+    });
 
-    if (!outputPath.empty()) {
+    return cfg;
+}
+
+}  // namespace
+
+void Command::selfplay(int argc, char *argv[])
+{
+    SelfplayConfig              cfg = parseSelfplayArguments(argc, argv);
+    std::unique_ptr<DataWriter> dataWriter;
+
+    if (!cfg.outputPath.empty()) {
         // Create data writer
-        switch (dataWriterType) {
-        case DataWriterType::PlainText:
-            dataWriter = std::make_unique<PlainTextDataWriter>(outputPath);
-            break;
-
-        case DataWriterType::SimpleBinary:
-            dataWriter = std::make_unique<SimpleBinaryDataWriter>(outputPath, false);
-            break;
-
-        case DataWriterType::SimpleBinaryLZ4:
-            dataWriter = std::make_unique<SimpleBinaryDataWriter>(outputPath, true);
-            break;
-
-        case DataWriterType::PackedBinary:
-            dataWriter = std::make_unique<PackedBinaryDataWriter>(outputPath, false);
-            break;
-
-        case DataWriterType::PackedBinaryLZ4:
-            dataWriter = std::make_unique<PackedBinaryDataWriter>(outputPath, true);
-            break;
-
-        case DataWriterType::Numpy:
+        if (cfg.dataWriterType == DataWriterType::Numpy) {
             ERRORL("Numpy data writer is not supported in selfplay.");
             std::exit(EXIT_FAILURE);
-            break;
         }
+        dataWriter = Tuning::makeDataWriter(cfg.dataWriterType, cfg.outputPath);
     }
 
     // Setup signal handler to close dataset file when receiving signal
@@ -299,169 +422,54 @@ void Command::selfplay(int argc, char *argv[])
         std::exit(0);
     });
 
-    if (openings.size())
-        MESSAGEL("Readed " << openings.size() << " openings for selfplay.");
-    else if (generateOpening)
+    if (cfg.openings.size())
+        MESSAGEL("Read " << cfg.openings.size() << " openings for selfplay.");
+    else if (cfg.generateOpening)
         MESSAGEL("No opening file is specified, will use automatic opening generation.");
     else
         MESSAGEL("No openings for selfplay, will use empty board for opening.");
 
     // Set message mode to none if silence search is enabled
-    if (silence)
+    if (cfg.silence)
         Config::GeneralCfg.messageMode = MsgMode::NONE;
     else
         Config::GeneralCfg.messageMode = MsgMode::BRIEF;
     Search::SearchCfg.aspirationWindow = true;
 
     // Set num threads and TT size
-    Search::Engine.setNumThreads(numThreads);
-    Search::Engine.searcher()->setMemoryLimit(hashSizeMb * 1024);
+    Search::Engine.setNumThreads(cfg.numThreads);
+    Search::Engine.searcher()->setMemoryLimit(cfg.hashSizeMb * 1024);
 
     PRNG                               prng = PRNG::nondeterministic();
-    std::uniform_int_distribution<int> boardSizeDis(boardSizeMin, boardSizeMax);
-    std::normal_distribution<double>   nodesDis(meanNodes, varNodes);
+    std::uniform_int_distribution<int> boardSizeDis(cfg.boardSizeMin, cfg.boardSizeMax);
+    std::normal_distribution<double>   nodesDis(cfg.meanNodes, cfg.varNodes);
     size_t                             totalGamePly = 0;
 
     Time startTime = now(), lastTime = startTime;
-    for (size_t i = 0; i < numGames;) {
+    for (size_t i = 0; i < cfg.numGames;) {
         Board board(boardSizeDis(prng));
-        board.newGame(rule);
+        board.newGame(cfg.rule);
 
-        if (!silence)
-            MESSAGEL("Start game " << i << ", boardsize = " << board.size() << ", rule = " << rule);
+        if (!cfg.silence)
+            MESSAGEL("Start game " << i << ", boardsize = " << board.size()
+                                   << ", rule = " << cfg.rule);
 
-        if (generateOpening) {
-            Opening::OpeningGenerator og(board.size(), rule, opengenCfg, prng);
+        applyOpening(board, cfg, prng);
 
-            // Generate a valid opening
-            for (;;) {
-                bool balanced = og.next();
-
-                // If we want to generate a balanced opening, abandon those not balanced
-                if (!balanced && opengenCfg.balanceWindow > 0
-                    && (opengenCfg.balance1Nodes > 0 || opengenCfg.balance2Nodes > 0))
-                    continue;
-                else
-                    break;
-            }
-
-            // Put opening
-            for (int i = 0; i < og.getBoard().ply(); i++) {
-                board.move(rule, og.getBoard().getHistoryMove(i));
-            }
-
-            if (!silence)
-                MESSAGEL("Put generated opening " << og.positionString());
-        }
-        else if (!openings.empty()) {
-            std::uniform_int_distribution<size_t> openingDis(0, openings.size() - 1);
-            std::uniform_int_distribution<int>    transformDis(0, TRANS_NB - 1);
-            size_t                                openingIdx = openingDis(prng);
-            TransformType                         transform  = TransformType(transformDis(prng));
-
-            // Apply opening pos
-            for (Pos pos : openings[openingIdx]) {
-                Pos transformedPos = applyTransform(pos, board.size(), transform);
-                board.move(rule, transformedPos);
-            }
-        }
-
-        // Set search options and init
-        Search::SearchOptions options;
-        options.rule                = {rule, GameRule::FREEOPEN};
-        options.multiPV             = multipv;
-        options.balanceMode         = Search::SearchOptions::BALANCE_NONE;
-        options.disableOpeningQuery = true;
-        Search::Engine.clear(true);
-
-        // Setup game entry data
-        GameEntry gameEntry;
-        for (int i = 0; i < board.ply(); i++)
-            gameEntry.initPosition.push_back(board.getHistoryMove(i));
-        gameEntry.boardsize = board.size();
-        gameEntry.rule      = rule;
-
-        // Selfplay loop
-        Value searchValue = VALUE_ZERO;
-        int   drawCnt     = 0;
-        while (board.movesLeft() > 0) {
-            // Stop self-play game if force draw or board is full
-            if ((forceDrawPly && board.ply() >= forceDrawPly)
-                || (forceDrawPlyLeft && board.movesLeft() <= forceDrawPlyLeft))
-                break;
-
-            // Set search limits, make sure max nodes stays in [0, +inf)
-            int    steps      = board.ply() - (int)gameEntry.initPosition.size();
-            double nodesScale = std::pow(nodesDecay, std::min(steps, maxDecaySteps));
-            options.maxNodes =
-                std::max<uint64_t>((uint64_t)std::max(nodesDis(prng) * nodesScale, 0.0), minNodes);
-            if (multipvDecaySteps > 0 && steps > 0 && steps % multipvDecaySteps == 0)
-                options.multiPV = std::max(1, options.multiPV - 1);
-
-            // Start thinking and wait for finish
-            Search::Engine.startThinking(board, options);
-            Search::Engine.waitForIdle();
-            auto mainThread = Search::Engine.main();
-
-            // We might have no legal move in Renju mode, which is regarded as loss
-            if (mainThread->rootMoves.empty()) {
-                searchValue = mated_in(0);
-                break;
-            }
-
-            // Record best move result
-            searchValue  = mainThread->rootMoves[0].value;
-            Pos bestMove = Search::Engine.ctx.bestMove;
-            gameEntry.moveSequence.push_back({bestMove, Eval(searchValue)});
-            if (options.multiPV > 1) {
-                auto &moveData   = gameEntry.moveSequence.back();
-                int   numPVMoves = std::min<int>(options.multiPV, mainThread->rootMoves.size());
-                moveData.tag = DataEntry::MoveDataTag(DataEntry::MULTIPV_BEGIN + numPVMoves - 2);
-                moveData.multiPvMoves = new PVMove[numPVMoves - 1];
-                for (int i = 1; i < numPVMoves; i++) {
-                    auto &rm = mainThread->rootMoves[i];
-                    assert(rm.pv[0] != bestMove);
-                    moveData.multiPvMoves[i - 1] = {
-                        rm.pv[0],
-                        Eval(rm.value != VALUE_NONE ? rm.value : rm.previousValue)};
-                }
-            }
-
-            // Stop self-play game if win/loss is found
-            if (std::abs(searchValue) >= mate_in(matePly))
-                break;
-            if (noMateMultiPV && std::abs(searchValue) >= VALUE_MATE_IN_MAX_PLY)
-                options.multiPV = 1;
-
-            // Stop self-play game if draw adjudication
-            if (drawCount && std::abs(searchValue) <= drawValue) {
-                if (++drawCnt >= drawCount && board.ply() >= minDrawPly)
-                    break;
-            }
-            else
-                drawCnt = 0;
-
-            // Make the move
-            board.move(rule, bestMove);
-        }
-
-        // Save game result (root samples)
-        Result result    = searchValue >= VALUE_MATE_IN_MAX_PLY    ? RESULT_WIN
-                           : searchValue <= VALUE_MATED_IN_MAX_PLY ? RESULT_LOSS
-                                                                   : RESULT_DRAW;
-        gameEntry.result = board.sideToMove() == WHITE ? result : Result(RESULT_WIN - result);
-        dataWriter->writeGame(gameEntry);
+        GameEntry gameEntry = playOneGame(board, cfg, prng, nodesDis);
+        if (dataWriter)
+            dataWriter->writeGame(gameEntry);
 
         // Print out generation progress over time
         i++;
         totalGamePly += board.ply();
-        if (now() - lastTime >= reportInterval) {
-            MESSAGEL("Played " << i << " of " << numGames
+        if (now() - lastTime >= cfg.reportInterval) {
+            MESSAGEL("Played " << i << " of " << cfg.numGames
                                << " games, average ply = " << totalGamePly / i
                                << ", game/min = " << i / ((now() - startTime) / 60000.0));
             lastTime = now();
         }
     }
 
-    MESSAGEL("Completed playing " << numGames << " games.");
+    MESSAGEL("Completed playing " << cfg.numGames << " games.");
 }

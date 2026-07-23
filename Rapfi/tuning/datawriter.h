@@ -25,6 +25,10 @@
 #include <string>
 #include <vector>
 
+namespace Command {
+enum class DataWriterType;  // forward declaration (command/argutils.h)
+}
+
 namespace Tuning {
 
 /// DataWriter class is the base class for an iterable-style dataset writer.
@@ -188,5 +192,12 @@ private:
     std::function<void(std::string)> flushCallback;
     bool                             writeSparseInputs;
 };
+
+/// Constructs the DataWriter for the five writer types whose construction is
+/// shared verbatim by the selfplay and dataprep commands. Numpy is NOT handled
+/// here: it needs command-specific arguments (dataprep) or is rejected
+/// (selfplay) - callers branch on Numpy before calling.
+std::unique_ptr<DataWriter> makeDataWriter(Command::DataWriterType dataWriterType,
+                                           const std::string      &outputPath);
 
 }  // namespace Tuning

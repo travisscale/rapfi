@@ -197,13 +197,8 @@ void Command::tuning(int argc, char *argv[])
          cxxopts::value<size_t>()->default_value(std::to_string(cfg.recomputeInterval)))  //
         ("h,help", "Print tuning usage");
 
-    try {
-        auto args = options.parse(argc, argv);
-
-        if (args.count("help")) {
-            std::cout << options.help() << std::endl;
-            std::exit(EXIT_SUCCESS);
-        }
+    parseSubcommandArguments(options, argc, argv, "tuning argument",
+                             [&](const cxxopts::ParseResult &args) {
 
         parseTuningRules(cfg, args["rules-to-tune"].as<std::vector<std::string>>());
         trainDatasetType     = parseDatasetType(args["training-dataset-type"].as<std::string>());
@@ -243,11 +238,7 @@ void Command::tuning(int argc, char *argv[])
         cfg.recomputeInterval        = args["recompute-interval"].as<size_t>();
 
         validateConfig(epochs, cfg);
-    }
-    catch (const std::exception &e) {
-        ERRORL("tuning argument: " << e.what());
-        std::exit(EXIT_FAILURE);
-    }
+    });
 
     try {
         // Create output directory

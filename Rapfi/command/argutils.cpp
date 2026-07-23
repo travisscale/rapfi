@@ -19,11 +19,16 @@
 #include "argutils.h"
 
 #include "../config.h"
+#include "../core/iohelper.h"
 
-#ifndef NO_COMMAND_MODULES
+#ifdef COMMAND_MODULES
     #define CXXOPTS_NO_REGEX
     #include <cxxopts.hpp>
 #endif
+#include <cstdlib>
+#include <functional>
+#include <iostream>
+#include <sstream>
 #include <string>
 
 Rule Command::parseRule(std::string_view ruleStr)
@@ -115,7 +120,7 @@ Command::parsePositionString(std::string_view positionString, int boardWidth, in
     return position;
 }
 
-#ifndef NO_COMMAND_MODULES
+#ifdef COMMAND_MODULES
 
 void Command::addPlayOptions(cxxopts::Options &options)
 {
@@ -192,6 +197,29 @@ Opening::OpeningGenConfig Command::parseOpengenConfig(const cxxopts::ParseResult
         throw std::invalid_argument("balancewindow must be greater than 0");
 
     return cfg;
+}
+
+void Command::parseSubcommandArguments(
+    cxxopts::Options &options,
+    int               argc,
+    char             *argv[],
+    const char       *errorPrefix,
+    const std::function<void(const cxxopts::ParseResult &)> &extract)
+{
+    try {
+        auto args = options.parse(argc, argv);
+
+        if (args.count("help")) {
+            std::cout << options.help() << std::endl;
+            std::exit(EXIT_SUCCESS);
+        }
+
+        extract(args);
+    }
+    catch (const std::exception &e) {
+        ERRORL(errorPrefix << ": " << e.what());
+        std::exit(EXIT_FAILURE);
+    }
 }
 
 #endif

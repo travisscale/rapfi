@@ -161,6 +161,7 @@ set(CORE_SOURCES
     command/argutils.cpp
     command/benchmark.cpp
     command/command.cpp
+    command/dbcommand.cpp
     command/gomocup.cpp
 
     core/compressor.cpp
@@ -221,6 +222,7 @@ set(MODULE_SOURCES
 set(HEADERS
     command/command.h
     command/argutils.h
+    command/dbcommand.h
 
     core/compressor.h
     core/filesystem.h

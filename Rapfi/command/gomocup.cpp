@@ -19,10 +19,7 @@
 #include "../config.h"
 #include "../core/iohelper.h"
 #include "../core/utils.h"
-#include "../database/dbclient.h"
 #include "../database/dbconfig.h"
-#include "../database/dbutils.h"
-#include "../database/yxdbstorage.h"
 #include "../eval/eval.h"
 #include "../eval/evalconfig.h"
 #include "../eval/evaluator.h"
@@ -34,7 +31,10 @@
 #include "../search/searchthread.h"
 #include "../tuning/tunemap.h"
 #include "command.h"
+#include "dbcommand.h"
 
+#include <algorithm>
+#include <atomic>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -51,49 +51,9 @@ static std::mutex protocolMutex;
 
 using namespace Database;
 
-namespace {
-
-std::filesystem::path readPathFromInput(std::istream &in = std::cin)
-{
-    std::string path;
-    in >> std::ws;
-    std::getline(in, path);
-    trimInplace(path);
-
-    return pathFromConsoleString(path);
-}
-
-bool checkLastMoveIsNotPass(Board &board)
-{
-    if (board.passMoveCount() > 0 && board.getLastMove() == Pos::PASS) {
-        ERRORL("Consecutive pass is not supported. "
-               "There must be one non-pass move between two pass moves.");
-        return true;
-    }
-    return false;
-}
-
-/// Parse a coord in form 'x,y' from in stream and check if the pos is legal.
-/// Legal means the pos must be an empty cell or an non-consecutive pass move.
-std::optional<Pos> parseLegalCoord(std::istream &is, Board &board)
-{
-    int  x = -2, y = -2;
-    char comma;
-    is >> x >> comma >> y;
-
-    Pos pos = inputCoordConvert(x, y, board.size(), Config::GeneralCfg.ioCoordMode);
-    if (board.isLegal(pos)) {
-        if (checkLastMoveIsNotPass(board))
-            return std::nullopt;
-        return pos;
-    }
-    else {
-        ERRORL("Coord is not valid or empty.");
-        return std::nullopt;
-    }
-}
-
-}  // namespace
+using Command::checkLastMoveIsNotPass;
+using Command::parseLegalCoord;
+using Command::readPathFromInput;
 
 namespace Command::GomocupProtocol {
 
@@ -190,6 +150,14 @@ void setGUIMode()
         Config::GeneralCfg.messageMode = MsgMode::NORMAL;
 }
 
+/// Set the searcher memory limit to the given budget minus the reserved amount,
+/// flooring the result at the minimal limit of 1 KiB.
+void setSearcherMemoryLimit(size_t maxMemSizeKB, size_t memReservedKB)
+{
+    size_t memLimitKB = maxMemSizeKB <= memReservedKB ? 1 : maxMemSizeKB - memReservedKB;
+    Search::Engine.searcher()->setMemoryLimit(memLimitKB);
+}
+
 void getOption()
 {
     std::string token, str;
@@ -239,9 +207,7 @@ void getOption()
             }
         }
 
-        // minimal hash size value is 1 KB
-        size_t memLimitKB = maxMemSizeKB <= memReservedKB ? 1 : maxMemSizeKB - memReservedKB;
-        Search::Engine.searcher()->setMemoryLimit(memLimitKB);
+        setSearcherMemoryLimit(maxMemSizeKB, memReservedKB);
     }
     else if (token == "RULE") {
         std::cin >> val;
@@ -263,9 +229,8 @@ void getOption()
         if (Config::GeneralCfg.memoryReservedMB[prevRule] != Config::GeneralCfg.memoryReservedMB[options.rule.rule]) {
             size_t maxMemSizeKB = Search::Engine.searcher()->getMemoryLimit()
                                   + Config::GeneralCfg.memoryReservedMB[prevRule] * 1024;
-            size_t memReservedKB = Config::GeneralCfg.memoryReservedMB[options.rule.rule] * 1024;
-            size_t memLimitKB    = maxMemSizeKB <= memReservedKB ? 1 : maxMemSizeKB - memReservedKB;
-            Search::Engine.searcher()->setMemoryLimit(memLimitKB);
+            setSearcherMemoryLimit(maxMemSizeKB,
+                                   Config::GeneralCfg.memoryReservedMB[options.rule.rule] * 1024);
         }
 
         // Clear TT if rule is changed
@@ -273,12 +238,6 @@ void getOption()
             board->newGame(options.rule);
             Search::Engine.clear(true);
         }
-    }
-    else if (token == "GAME_TYPE") {
-        std::cin >> val;
-    }
-    else if (token == "FOLDER") {
-        std::cin >> str;
     }
     /////////////////////////////////////////////////
     // Yixin - Board Extension
@@ -303,9 +262,6 @@ void getOption()
         case 2: options.infoMode = Search::SearchOptions::INFO_DETAIL; break;
         case 3: options.infoMode = Search::SearchOptions::INFO_REALTIME_AND_DETAIL; break;
         }
-    }
-    else if (token == "TIME_INCREMENT") {
-        std::cin >> val;
     }
     else if (token == "CAUTION_FACTOR") {
         std::cin >> val;
@@ -344,21 +300,18 @@ void getOption()
             Search::Engine.setNumThreads(val);
         }
     }
-    else if (token == "THREAD_SPLIT_DEPTH") {
-        std::cin >> val;
-    }
     else if (token == "PONDERING") {
         std::cin >> val;
         options.pondering = val == 1;
     }
-    else if (token == "CHECKMATE") {
+    // Protocol-required no-ops: these Gomocup/Yixin-Board options are accepted
+    // (their value must be consumed from the stream) but deliberately ignored.
+    else if (token == "GAME_TYPE" || token == "TIME_INCREMENT" || token == "THREAD_SPLIT_DEPTH"
+             || token == "CHECKMATE" || token == "NBESTSYM" || token == "VCTHREAD") {
         std::cin >> val;
     }
-    else if (token == "NBESTSYM") {
-        std::cin >> val;
-    }
-    else if (token == "VCTHREAD") {
-        std::cin >> val;
+    else if (token == "FOLDER") {
+        std::cin >> str;  // persistent folder path, deliberately ignored
     }
     else if (token == "USEDATABASE") {
         std::cin >> val;
@@ -476,6 +429,12 @@ void reloadConfig()
         ERRORL("Failed to load config. Please check if config file is correct.");
 }
 
+/// Builds the context for the database protocol handlers in dbcommand.cpp.
+Command::DBCommandContext dbCommandContext()
+{
+    return {std::cin, board.get(), options, Search::Engine.dbStorage()};
+}
+
 void setDatabase()
 {
     auto databasePath = readPathFromInput();
@@ -484,88 +443,6 @@ void setDatabase()
         auto newDatabaseStorage = Database::createDBStorage(Database::DatabaseCfg);
         if (newDatabaseStorage)
             Search::Engine.setupDatabase(std::move(newDatabaseStorage));
-    }
-}
-
-void saveDatabase()
-{
-    if (Search::Engine.dbStorage()) {
-        auto startTime = now();
-        Search::Engine.dbStorage()->flush();
-        auto endTime = now();
-        MESSAGEL("Saved database file using " << (endTime - startTime) << " ms.");
-    }
-}
-
-void databaseToTxt(bool currentBoardSizeAndRule)
-{
-    auto txtPath = readPathFromInput();
-    if (Search::Engine.dbStorage()) {
-        std::ofstream                                        txtout(txtPath);
-        std::function<bool(const DBKey &, const DBRecord &)> filter = nullptr;
-        if (currentBoardSizeAndRule)
-            filter = [&](const DBKey &key, const DBRecord &record) -> bool {
-                return key.boardHeight == board->size() && key.boardWidth == board->size()
-                       && key.rule == options.rule.rule;
-            };
-        ::Database::databaseToCSVFile(*Search::Engine.dbStorage(), txtout, filter);
-        MESSAGEL("Wrote " << (currentBoardSizeAndRule ? "(current boardsize and rule)" : "(all)")
-                          << " database to csv-format text file " << pathToConsoleString(txtPath));
-    }
-}
-
-void libToDatabase()
-{
-    auto libPath = readPathFromInput();
-    if (Search::Engine.dbStorage()) {
-        MESSAGEL("Importing from lib file " << pathToConsoleString(libPath)
-                                            << ", this might take a while...");
-        auto          startTime = now();
-        std::ifstream libStream(libPath, std::ios::binary);
-        if (!libStream) {
-            ERRORL("Unable to open file " << pathToConsoleString(libPath) << " for reading.");
-            return;
-        }
-
-        try {
-            size_t writeCount = ::Database::importLibToDatabase(*Search::Engine.dbStorage(),
-                                                                libStream,
-                                                                options.rule,
-                                                                board ? board->size() : 15);
-            auto   endTime    = now();
-            MESSAGEL("Imported " << writeCount << " records from lib file using "
-                                 << (endTime - startTime) << " ms.");
-        }
-        catch (const std::exception &e) {
-            ERRORL("Failed to import lib file: " << e.what());
-        }
-    }
-}
-
-void databaseToLib()
-{
-    auto libPath = readPathFromInput();
-    if (Search::Engine.dbStorage()) {
-        MESSAGEL("Exporting to lib file " << pathToConsoleString(libPath)
-                                          << ", this might take a while...");
-        auto          startTime = now();
-        std::ofstream libStream(libPath, std::ios::binary);
-        if (!libStream) {
-            ERRORL("Unable to open file " << pathToConsoleString(libPath) << " for writing.");
-            return;
-        }
-
-        try {
-            DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
-            size_t   nodeCount =
-                ::Database::exportDatabaseToLib(dbClient, libStream, *board, options.rule);
-            auto endTime = now();
-            MESSAGEL("Exported " << nodeCount << " nodes to lib file using "
-                                 << (endTime - startTime) << " ms.");
-        }
-        catch (const std::exception &e) {
-            ERRORL("Failed to export database to lib file: " << e.what());
-        }
     }
 }
 
@@ -777,381 +654,10 @@ void balance(Search::SearchOptions::BalanceMode mode)
     think(*board, 1, mode, false, true);
 }
 
-void getDatabasePosition()
-{
-    board->newGame(options.rule);
-
-    // Read position sequence
-    while (true) {
-        std::string coordStr;
-        std::cin >> coordStr;
-        upperInplace(coordStr);
-
-        if (coordStr == "DONE")
-            break;
-
-        std::stringstream ss;
-        ss << coordStr;
-        auto pos = parseLegalCoord(ss, *board);
-
-        if (pos.has_value())
-            board->move(options.rule, *pos);
-    }
-}
-
-void queryDatabaseAll(bool getPosition)
-{
-    using namespace ::Database;
-    if (getPosition)
-        getDatabasePosition();
-
-    if (Search::Engine.dbStorage()) {
-        MESSAGEL("DATABASE REFRESH");
-
-        DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
-
-        // Get all child records and child board texts
-        auto childRecords     = dbClient.queryChildren(*board, options.rule);
-        auto boardPosAndTexts = dbClient.queryBoardTexts(*board, options.rule);
-
-        // Iterate all empty positions
-        auto childRecordIt      = childRecords.begin();
-        auto boardPosAndTextsIt = boardPosAndTexts.begin();
-        FOR_EVERY_EMPTY_POS(board, pos)
-        {
-            bool        printThisPos      = false;
-            int         displayLabelValue = -1;
-            std::string boardTextUTF8;
-            DBRecord    record {};  // init as null record
-
-            if (childRecordIt != childRecords.end() && childRecordIt->first == pos) {
-                record                   = childRecordIt->second;
-                std::string displayLabel = record.displayLabel();
-                if (!displayLabel.empty()) {
-                    // Encode the display label (maximum 4 chars) as an int32
-                    if (displayLabel.length() > 4)
-                        displayLabel = displayLabel.substr(0, 4);
-                    displayLabelValue = 0;
-                    for (char c : displayLabel)
-                        displayLabelValue = (displayLabelValue << 8) | c;
-                }
-                childRecordIt++;
-                printThisPos = true;
-            }
-
-            if (boardPosAndTextsIt != boardPosAndTexts.end() && boardPosAndTextsIt->first == pos) {
-                boardTextUTF8 = std::move(boardPosAndTextsIt->second);
-                boardPosAndTextsIt++;
-                printThisPos = true;
-            }
-
-            // Print this position if it has DBRecord or board text
-            if (printThisPos) {
-                auto [cx, cy] = outputCoordConvert(pos, board->size(), Config::GeneralCfg.ioCoordMode);
-                MESSAGEL("DATABASE " << cx << ' ' << cy << ' ' << displayLabelValue << ' '
-                                     << record.value << ' ' << record.depth() << ' '
-                                     << int(record.bound()) << ' ' << int(!record.comment().empty())
-                                     << ' ' << UTF8ToConsoleCP(boardTextUTF8));
-            }
-        }
-
-        MESSAGEL("DATABASE DONE");
-
-        // Insert a new none record if no record is found at this position
-        if (!Database::DatabaseCfg.search.readonlyMode) {
-            DBRecord record;
-            if (board->ply() > 0 && !dbClient.query(*board, options.rule, record))
-                dbClient.save(*board, options.rule, DBRecord {LABEL_NONE}, OverwriteRule::Disabled);
-        }
-    }
-}
-
-void queryDatabaseOne(bool getPosition)
-{
-    using namespace ::Database;
-    if (getPosition)
-        getDatabasePosition();
-
-    if (Search::Engine.dbStorage()) {
-        DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
-        DBRecord record;
-        if (dbClient.query(*board, options.rule, record))
-            MESSAGEL("DATABASE ONE " << int(record.label) << ' ' << record.value << ' '
-                                     << record.depth() << ' ' << int(record.bound()) << ' '
-                                     << record.displayLabel());
-        else
-            MESSAGEL("DATABASE ONE 0 0 0 0");
-    }
-}
-
-void queryDatabaseText(bool getPosition)
-{
-    using namespace ::Database;
-    if (getPosition)
-        getDatabasePosition();
-
-    if (Search::Engine.dbStorage()) {
-        DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
-        DBRecord record;
-        if (dbClient.query(*board, options.rule, record) && !record.isNull())
-            MESSAGEL("DATABASE TEXT " << std::quoted(UTF8ToConsoleCP(record.comment())));
-        else
-            MESSAGEL("DATABASE TEXT \"\"");
-    }
-}
-
-void editDatabaseTVD()
-{
-    using namespace ::Database;
-    int updateMask, newLabel, newValue, newDepth;
-    std::cin >> updateMask >> newLabel >> newValue >> newDepth;
-    getDatabasePosition();
-
-    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
-        switch (newLabel) {
-        case 'W': newLabel = LABEL_WIN; break;
-        case 'L': newLabel = LABEL_LOSE; break;
-        case 'D': newLabel = LABEL_DRAW; break;
-        case 'X': newLabel = LABEL_BLOCKMOVE; break;
-        default: break;
-        }
-
-        DBClient dbClient(*Search::Engine.dbStorage(), (DBRecordMask)updateMask);
-        DBRecord record {DBLabel(newLabel), DBValue(newValue)};
-        record.setDepthBound(newDepth, BOUND_EXACT);
-        dbClient.save(*board, options.rule, record, OverwriteRule::Always);
-        dbClient.sync();
-        queryDatabaseOne(false);
-    }
-}
-
-void editDatabaseText()
-{
-    using namespace ::Database;
-    std::string newText;
-    std::cin >> std::ws >> std::quoted(newText);
-    getDatabasePosition();
-
-    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
-        DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_TEXT);
-        DBRecord record;
-        if (!dbClient.query(*board, options.rule, record))
-            record = DBRecord {LABEL_NONE};
-
-        record.setComment(ConsoleCPToUTF8(newText));
-        dbClient.save(*board, options.rule, record, OverwriteRule::Always);
-    }
-}
-
-void editDatabaseBoardLabel()
-{
-    using namespace ::Database;
-    std::string coordStr, newText;
-    std::cin >> coordStr;
-    std::cin.ignore(1);
-    std::getline(std::cin, newText);
-    getDatabasePosition();
-
-    std::stringstream ss;
-    ss << coordStr;
-    auto pos = parseLegalCoord(ss, *board);
-    if (!pos.has_value())
-        return;
-
-    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
-        DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_TEXT);
-        dbClient.setBoardText(*board, options.rule, *pos, ConsoleCPToUTF8(newText));
-    }
-}
-
-void deleteDatabaseAll(bool getPosition)
-{
-    using namespace ::Database;
-
-    std::cin >> std::ws;
-    std::function<DBClient::DelType(DBRecord &)> deleteFilter = nullptr;
-    if (auto firstChar = std::toupper(std::cin.peek());
-        firstChar == 'W' || firstChar == 'L' || firstChar == 'N') {
-        std::string deleteType;
-        std::cin >> deleteType;
-        upperInplace(deleteType);
-        if (deleteType == "NONWL")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_WIN || record.label == LABEL_LOSE
-                           ? DBClient::DelType::NoDelete
-                           : DBClient::DelType::DeleteRecursive;
-            };
-        else if (deleteType == "NONWLRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_WIN || record.label == LABEL_LOSE
-                           ? DBClient::DelType::NoDeleteRecursive
-                           : DBClient::DelType::DeleteRecursive;
-            };
-        else if (deleteType == "NONWLD")
-            deleteFilter = [](DBRecord &record) {
-                return isDeterminedLabel(record.label) ? DBClient::DelType::NoDelete
-                                                       : DBClient::DelType::DeleteRecursive;
-            };
-        else if (deleteType == "NONWLDRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                return isDeterminedLabel(record.label) ? DBClient::DelType::NoDeleteRecursive
-                                                       : DBClient::DelType::DeleteRecursive;
-            };
-        else if (deleteType == "W")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_WIN ? DBClient::DelType::DeleteRecursive
-                                                 : DBClient::DelType::NoDelete;
-            };
-        else if (deleteType == "WRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_WIN ? DBClient::DelType::DeleteRecursive
-                                                 : DBClient::DelType::NoDeleteRecursive;
-            };
-        else if (deleteType == "L")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_LOSE ? DBClient::DelType::DeleteRecursive
-                                                  : DBClient::DelType::NoDelete;
-            };
-        else if (deleteType == "LRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_LOSE ? DBClient::DelType::DeleteRecursive
-                                                  : DBClient::DelType::NoDeleteRecursive;
-            };
-        else if (deleteType == "WL")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_WIN || record.label == LABEL_LOSE
-                           ? DBClient::DelType::DeleteRecursive
-                           : DBClient::DelType::NoDelete;
-            };
-        else if (deleteType == "WLRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_WIN || record.label == LABEL_LOSE
-                           ? DBClient::DelType::DeleteRecursive
-                           : DBClient::DelType::NoDeleteRecursive;
-            };
-        else if (deleteType == "WLD")
-            deleteFilter = [](DBRecord &record) {
-                return isDeterminedLabel(record.label) ? DBClient::DelType::DeleteRecursive
-                                                       : DBClient::DelType::NoDelete;
-            };
-        else if (deleteType == "WLDRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                return isDeterminedLabel(record.label) ? DBClient::DelType::DeleteRecursive
-                                                       : DBClient::DelType::NoDeleteRecursive;
-            };
-        else if (deleteType == "WLNOSTEP")
-            deleteFilter = [](DBRecord &record) {
-                Value value = Value(-record.value);
-                return record.label == LABEL_WIN && value <= VALUE_MATE_IN_MAX_PLY
-                               || record.label == LABEL_LOSE && value >= VALUE_MATED_IN_MAX_PLY
-                           ? DBClient::DelType::DeleteRecursive
-                           : DBClient::DelType::NoDelete;
-            };
-        else if (deleteType == "WLNOSTEPRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                Value value = Value(-record.value);
-                return record.label == LABEL_WIN && value <= VALUE_MATE_IN_MAX_PLY
-                               || record.label == LABEL_LOSE && value >= VALUE_MATED_IN_MAX_PLY
-                           ? DBClient::DelType::DeleteRecursive
-                           : DBClient::DelType::NoDeleteRecursive;
-            };
-        else if (deleteType == "WLINSTEP") {
-            int step;
-            std::cin >> step;
-            deleteFilter = [step](DBRecord &record) {
-                Value value = Value(-record.value);
-                return (record.label == LABEL_WIN && value > VALUE_MATE_IN_MAX_PLY
-                        || record.label == LABEL_LOSE && value < VALUE_MATED_IN_MAX_PLY)
-                               && mate_step(value, -1) <= step
-                           ? DBClient::DelType::DeleteRecursive
-                           : DBClient::DelType::NoDelete;
-            };
-        }
-        else if (deleteType == "WLINSTEPRECURSIVE") {
-            int step;
-            std::cin >> step;
-            deleteFilter = [step](DBRecord &record) {
-                Value value = Value(-record.value);
-                return (record.label == LABEL_WIN && value > VALUE_MATE_IN_MAX_PLY
-                        || record.label == LABEL_LOSE && value < VALUE_MATED_IN_MAX_PLY)
-                               && mate_step(value, -1) <= step
-                           ? DBClient::DelType::DeleteRecursive
-                           : DBClient::DelType::NoDeleteRecursive;
-            };
-        }
-        else
-            ERRORL("Unknown database delete type " << deleteType);
-    }
-
-    if (getPosition)
-        getDatabasePosition();
-
-    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
-        MESSAGEL("Deleting child records, this might take a while...");
-        auto   startTime        = now();
-        size_t sizeBeforeDelete = Search::Engine.dbStorage()->size();
-        {
-            DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
-            dbClient.delChildren(*board, options.rule, deleteFilter);
-        }
-        size_t sizeAfterDelete = Search::Engine.dbStorage()->size();
-        auto   endTime         = now();
-        MESSAGEL("Done deleting " << (sizeBeforeDelete - sizeAfterDelete) << " records using "
-                                  << (endTime - startTime) << " ms.");
-
-        queryDatabaseAll(false);
-    }
-}
-
-void deleteDatabaseOne(bool getPosition)
-{
-    using namespace ::Database;
-    if (getPosition)
-        getDatabasePosition();
-
-    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
-        DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
-        dbClient.del(*board, options.rule);
-    }
-}
-
 void searchDefend()
 {
     options.multiPV = board->movesLeft();
     think(*board, std::max<uint16_t>(options.multiPV, 1));
-}
-
-void splitDatabase()
-{
-    auto databasePath = readPathFromInput();
-    if (Search::Engine.dbStorage()) {
-        std::string dbPathUTF8 = databasePath.u8string();
-        if (auto dbToSplit = Database::createDBStorage(Database::DatabaseCfg, dbPathUTF8)) {
-            auto   startTime  = now();
-            size_t writeCount = ::Database::splitDatabase(*Search::Engine.dbStorage(),
-                                                          *dbToSplit,
-                                                          *board,
-                                                          options.rule);
-            auto   endTime    = now();
-            MESSAGEL("Write " << writeCount << " records into the spilted database using "
-                              << (endTime - startTime) << " ms.");
-        }
-    }
-}
-
-void mergeDatabase()
-{
-    auto databasePath = readPathFromInput();
-    if (Search::Engine.dbStorage()) {
-        std::string dbPathUTF8 = databasePath.u8string();
-        if (auto dbToMerge = Database::createDBStorage(Database::DatabaseCfg, dbPathUTF8)) {
-            size_t writeCount = mergeDatabase(*Search::Engine.dbStorage(),
-                                              *dbToMerge,
-                                              Database::DatabaseCfg.search.overwriteRule);
-            MESSAGEL("Merged " << writeCount << " out of " << dbToMerge->size()
-                               << " records into the database.");
-        }
-    }
 }
 
 void swap2board()
@@ -1320,11 +826,11 @@ bool runProtocol()
     else if (cmd == "YXHASHDUMP")          dumpHash();
     else if (cmd == "YXHASHLOAD")          loadHash();
     else if (cmd == "YXSETDATABASE")       setDatabase();
-    else if (cmd == "YXSAVEDATABASE")      saveDatabase();
-    else if (cmd == "YXDBTOTXTALL")        databaseToTxt(false);
-    else if (cmd == "YXDBTOTXT")           databaseToTxt(true);
-    else if (cmd == "YXLIBTODB")           libToDatabase();
-    else if (cmd == "YXDBTOLIB")           CheckBoardOK(databaseToLib);
+    else if (cmd == "YXSAVEDATABASE")      { auto ctx = dbCommandContext(); saveDatabase(ctx); }
+    else if (cmd == "YXDBTOTXTALL")        { auto ctx = dbCommandContext(); databaseToTxt(ctx, false); }
+    else if (cmd == "YXDBTOTXT")           { auto ctx = dbCommandContext(); databaseToTxt(ctx, true); }
+    else if (cmd == "YXLIBTODB")           { auto ctx = dbCommandContext(); libToDatabase(ctx); }
+    else if (cmd == "YXDBTOLIB")           CheckBoardOK([] { auto ctx = dbCommandContext(); databaseToLib(ctx); });
     else if (cmd == "RELOADCONFIG")        reloadConfig();
     else if (cmd == "LOADMODEL")           loadModel();
     else if (cmd == "EXPORTMODEL")         exportModel();
@@ -1342,18 +848,18 @@ bool runProtocol()
     else if (cmd == "YXSHOWFORBID")        CheckBoardOK(showForbid);
     else if (cmd == "YXBALANCEONE")        CheckBoardOK([] { balance(Search::SearchOptions::BALANCE_ONE); });
     else if (cmd == "YXBALANCETWO")        CheckBoardOK([] { balance(Search::SearchOptions::BALANCE_TWO); });
-    else if (cmd == "YXQUERYDATABASEALL")  CheckBoardOK([] { queryDatabaseAll(true); });
-    else if (cmd == "YXQUERYDATABASEONE")  CheckBoardOK([] { queryDatabaseOne(true); });
-    else if (cmd == "YXQUERYDATABASETEXT") CheckBoardOK([] { queryDatabaseText(true); });
-    else if (cmd == "YXQUERYDATABASEALLT") CheckBoardOK([] { queryDatabaseAll(true); queryDatabaseText(false); });
-    else if (cmd == "YXEDITTVDDATABASE")   CheckBoardOK(editDatabaseTVD);
-    else if (cmd == "YXEDITTEXTDATABASE")  CheckBoardOK(editDatabaseText);
-    else if (cmd == "YXEDITLABELDATABASE") CheckBoardOK(editDatabaseBoardLabel);
-    else if (cmd == "YXDELETEDATABASEONE") CheckBoardOK([] { deleteDatabaseOne(true); });
-    else if (cmd == "YXDELETEDATABASEALL") CheckBoardOK([] { deleteDatabaseAll(true); });
+    else if (cmd == "YXQUERYDATABASEALL")  CheckBoardOK([] { auto ctx = dbCommandContext(); queryDatabaseAll(ctx, true); });
+    else if (cmd == "YXQUERYDATABASEONE")  CheckBoardOK([] { auto ctx = dbCommandContext(); queryDatabaseOne(ctx, true); });
+    else if (cmd == "YXQUERYDATABASETEXT") CheckBoardOK([] { auto ctx = dbCommandContext(); queryDatabaseText(ctx, true); });
+    else if (cmd == "YXQUERYDATABASEALLT") CheckBoardOK([] { auto ctx = dbCommandContext(); queryDatabaseAll(ctx, true); queryDatabaseText(ctx, false); });
+    else if (cmd == "YXEDITTVDDATABASE")   CheckBoardOK([] { auto ctx = dbCommandContext(); editDatabaseTVD(ctx); });
+    else if (cmd == "YXEDITTEXTDATABASE")  CheckBoardOK([] { auto ctx = dbCommandContext(); editDatabaseText(ctx); });
+    else if (cmd == "YXEDITLABELDATABASE") CheckBoardOK([] { auto ctx = dbCommandContext(); editDatabaseBoardLabel(ctx); });
+    else if (cmd == "YXDELETEDATABASEONE") CheckBoardOK([] { auto ctx = dbCommandContext(); deleteDatabaseOne(ctx, true); });
+    else if (cmd == "YXDELETEDATABASEALL") CheckBoardOK([] { auto ctx = dbCommandContext(); deleteDatabaseAll(ctx, true); });
     else if (cmd == "YXSEARCHDEFEND")      CheckBoardOK(searchDefend);
-    else if (cmd == "YXDBSPLIT")           CheckBoardOK(splitDatabase);
-    else if (cmd == "YXDBMERGE")           CheckBoardOK(mergeDatabase);
+    else if (cmd == "YXDBSPLIT")           CheckBoardOK([] { auto ctx = dbCommandContext(); splitDatabase(ctx); });
+    else if (cmd == "YXDBMERGE")           CheckBoardOK([] { auto ctx = dbCommandContext(); mergeDatabase(ctx); });
     else if (cmd == "SWAP2BOARD")          CheckBoardOK(swap2board);
     else if (cmd == "TRACEBOARD")          CheckBoardOK(traceBoard);
     else if (cmd == "TRACESEARCH")         CheckBoardOK(traceSearch);
@@ -1386,7 +892,7 @@ extern "C" void gomocupLoopOnce()
 }
 #endif
 
-/// Warp around runProtocol(), looping until exit condition is met.
+/// Wrap around runProtocol(), looping until exit condition is met.
 /// This will only return after all searching threads have ended.
 void Command::gomocupLoop()
 {

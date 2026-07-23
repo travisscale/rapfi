@@ -78,17 +78,16 @@ std::unique_ptr<DBStorage> createDBStorage(const cxxopts::ParseResult &args)
 
 std::unique_ptr<DBStorage> createDBStorageFromCmdline(std::string cmdline)
 {
-    // Split arguments from cmdline
+    // Split arguments from cmdline (owned storage; cxxopts wants argv-style char*)
+    std::vector<std::string> tokens {""};  // argv[0] placeholder
+    std::istringstream       iss(cmdline);
+    for (std::string token; iss >> token;)
+        tokens.push_back(std::move(token));
+
     std::vector<char *> arguments;
-    std::istringstream  iss(cmdline);
-    std::string         token;
-    arguments.push_back(0);
-    while (iss >> token) {
-        char *arg = new char[token.size() + 1];
-        std::copy(token.begin(), token.end(), arg);
-        arg[token.size()] = '\0';
-        arguments.push_back(arg);
-    }
+    arguments.reserve(tokens.size());
+    for (auto &t : tokens)
+        arguments.push_back(t.data());
 
     auto                       options   = makeDBCreationOptions("database create");
     std::unique_ptr<DBStorage> dbStorage = nullptr;
@@ -99,9 +98,6 @@ std::unique_ptr<DBStorage> createDBStorageFromCmdline(std::string cmdline)
     catch (const std::exception &e) {
         ERRORL("Failed to create database: " << e.what());
     }
-
-    for (size_t i = 1; i < arguments.size(); i++)
-        delete[] arguments[i];
 
     return dbStorage;
 }
@@ -248,13 +244,8 @@ void Command::database(int argc, char *argv[])
          cxxopts::value<std::string>()->default_value(""))  //
         ("h,help", "Print database usage");
 
-    try {
-        auto args = options.parse(argc, argv);
-
-        if (args.count("help")) {
-            std::cout << options.help() << std::endl;
-            std::exit(EXIT_SUCCESS);
-        }
+    parseSubcommandArguments(options, argc, argv, "database command",
+                             [&](const cxxopts::ParseResult &args) {
 
         {  // Load database command sequences
             std::string commands = args["commands"].as<std::string>();
@@ -266,11 +257,7 @@ void Command::database(int argc, char *argv[])
         }
 
         dbStorage = createDBStorage(args);
-    }
-    catch (const std::exception &e) {
-        ERRORL("database command: " << e.what());
-        std::exit(EXIT_FAILURE);
-    }
+    });
 
     std::istream &is =
         commandStream.peek() == std::istringstream::traits_type::eof() ? std::cin : commandStream;

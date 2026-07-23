@@ -21,6 +21,7 @@
 #include "../core/types.h"
 #include "../search/opening.h"
 
+#include <functional>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -54,7 +55,7 @@ std::vector<Pos> parsePositionString(std::string_view posStr, int boardWidth, in
 
 }  // namespace Command
 
-#ifndef NO_COMMAND_MODULES
+#ifdef COMMAND_MODULES
 
 // forward declaration
 namespace cxxopts {
@@ -73,6 +74,17 @@ void addOpengenOptions(cxxopts::Options &options, const Opening::OpeningGenConfi
 /// Parse opengen config from arguments.
 /// Throws std::invalid_argument if arguments are not correct.
 Opening::OpeningGenConfig parseOpengenConfig(const cxxopts::ParseResult &result);
+
+/// Runs the scaffold shared by every subcommand: parse argv against options,
+/// print help and exit(EXIT_SUCCESS) on "help", then run `extract` (the
+/// per-command argument extraction + validation). Any std::exception thrown
+/// inside parsing or `extract` is reported as "<errorPrefix>: <what>" followed
+/// by exit(EXIT_FAILURE) - byte-identical to the scaffold it replaces.
+void parseSubcommandArguments(cxxopts::Options &options,
+                              int               argc,
+                              char             *argv[],
+                              const char       *errorPrefix,
+                              const std::function<void(const cxxopts::ParseResult &)> &extract);
 
 }  // namespace Command
 
