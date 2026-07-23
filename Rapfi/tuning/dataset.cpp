@@ -124,12 +124,16 @@ public:
             compressor.reset();
         }
 
-        // fileStream will be set std::istream::badbit
-        int magic;
-        files[nextIdx].read(reinterpret_cast<char *>(&magic), sizeof(magic));
-        files[nextIdx].seekg(0);
+        // Probe the LZ4 frame magic. A zero-byte file skips the probe (the read would
+        // throw, as the streams have failbit exceptions enabled) and is treated as an
+        // uncompressed stream, which yields EOF on the first read and gets skipped by
+        // the empty-file loop in next(DataEntry*).
+        int magic = 0;
+        if (files[nextIdx].peek() != std::ifstream::traits_type::eof()) {
+            files[nextIdx].read(reinterpret_cast<char *>(&magic), sizeof(magic));
+            files[nextIdx].seekg(0);
+        }
 
-        // Check LZ4 magic
         compressor = std::make_unique<Compressor>(
             files[nextIdx],
             magic == 0x184D2204 ? Compressor::Type::LZ4_DEFAULT : Compressor::Type::NO_COMPRESS);
@@ -148,8 +152,10 @@ public:
         istream = nullptr;
         if (compressor)
             compressor.reset();
-        for (std::ifstream &fs : files)
+        for (std::ifstream &fs : files) {
+            fs.clear();  // drop any eof/fail state before rewinding
             fs.seekg(0);
+        }
         nextIdx = 0;
         next();
     }
@@ -195,14 +201,15 @@ bool SimpleBinaryDataset::next(DataEntry *entry)
         uint16_t result : 2;     // game outcome: 0=loss, 1=draw, 2=win (side to move pov)
         uint16_t ply : 9;        // current number of stones on board
         uint16_t boardsize : 5;  // board size in [5-22]
-        uint16_t rule : 3;       // game rule: 0=freestyle, 1=standard, 4=renju
+        uint16_t rule : 3;       // gomocup rule number: 0=freestyle, 1=standard, 4=renju
         uint16_t move : 13;      // move output by the engine
     } ehead;
     uint16_t position[MAX_MOVES];  // move sequence that representing a position
 
-    // Check if current stream has reached its EOF, if so proceeds to the next one
-    if (std::istream &src = dataSource->getStream();
-        src.eof() || src.peek() == std::ios::traits_type::eof()) {
+    // While the current stream has reached its EOF, proceed to the next file
+    // (looping over any empty file in the middle of the file list)
+    while (dataSource->getStream().eof()
+           || dataSource->getStream().peek() == std::ios::traits_type::eof()) {
         if (!dataSource->next())
             return false;
     }
@@ -215,7 +222,8 @@ bool SimpleBinaryDataset::next(DataEntry *entry)
     // Check legality of entryhead
     if (ehead.boardsize == 0)
         throw std::runtime_error("wrong boardsize in dataset");
-    if (ehead.rule != 0 && ehead.rule != 1 && ehead.rule != 4)
+    Rule rule = decodeWireRule(ehead.rule);
+    if (rule >= RULE_NB)
         throw std::runtime_error("wrong rule in dataset");
     if (ehead.result != 0 && ehead.result != 1 && ehead.result != 2)
         throw std::runtime_error("wrong result in dataset");
@@ -223,6 +231,7 @@ bool SimpleBinaryDataset::next(DataEntry *entry)
         throw std::runtime_error("wrong ply in dataset");
 
     if (entry) {
+        entry->clearMoveData();  // free move data of the previous entry, if the entry is reused
         entry->position.clear();
         entry->position.reserve(ehead.ply);
 
@@ -260,7 +269,7 @@ bool SimpleBinaryDataset::next(DataEntry *entry)
         entry->move        = bestMove;
         entry->eval        = VALUE_NONE;  // represent as no eval
         entry->boardsize   = ehead.boardsize;
-        entry->rule        = ehead.rule == 4 ? RENJU : Rule(ehead.rule);
+        entry->rule        = rule;
         entry->result      = Result(ehead.result);
         entry->moveDataTag = DataEntry::NO_MOVE_DATA;
     }
@@ -307,12 +316,16 @@ public:
             compressor.reset();
         }
 
-        // fileStream will be set std::istream::badbit
-        int magic;
-        files[nextFileIdx].read(reinterpret_cast<char *>(&magic), sizeof(magic));
-        files[nextFileIdx].seekg(0);
+        // Probe the LZ4 frame magic. A zero-byte file skips the probe (the read would
+        // throw, as the streams have failbit exceptions enabled) and is treated as an
+        // uncompressed stream, which yields EOF on the first readNextGame and gets
+        // skipped by the file-advance loop in PackedBinaryDataset::next().
+        int magic = 0;
+        if (files[nextFileIdx].peek() != std::ifstream::traits_type::eof()) {
+            files[nextFileIdx].read(reinterpret_cast<char *>(&magic), sizeof(magic));
+            files[nextFileIdx].seekg(0);
+        }
 
-        // Check LZ4 magic
         compressor = std::make_unique<Compressor>(
             files[nextFileIdx],
             magic == 0x184D2204 ? Compressor::Type::LZ4_DEFAULT : Compressor::Type::NO_COMPRESS);
@@ -325,24 +338,25 @@ public:
         return true;
     }
 
-    /// Get the next data entry.
+    /// Get the next data entry from the currently opened file.
+    /// This function does NOT advance to the next file: when it returns false, the
+    /// caller decides whether to advance (see PackedBinaryDataset::next), mirroring
+    /// the nextEntry/nextFile split of the other DataSource classes.
     /// @param dataEntry An optional dataEntry pointer to receive the data.
-    /// @return False when we reaches the end of the current file, otherwise true.
+    /// @return False when the current file has no more entries, otherwise true.
     bool nextEntry(DataEntry *dataEntry)
     {
-        // Check for end of game entry
-        if (nextMoveIdx >= gameEntry.moveSequence.size()) {
-            if (!readNextGame(*istream, gameEntry)) {
-                // Read next file until we get a good game entry
-                do {
-                    if (!nextFile())
-                        return false;
-                } while (readNextGame(*istream, gameEntry));
-            }
+        // If all moves of the current game are consumed, read the next game from the
+        // current file (looping over games with an empty move sequence, if any).
+        while (nextMoveIdx >= gameEntry.moveSequence.size()) {
+            if (!readNextGame(*istream, gameEntry))
+                return false;
             nextMoveIdx = 0;
         }
 
         if (dataEntry) {
+            // Free move data of the previous entry, if the entry is reused
+            dataEntry->clearMoveData();
             dataEntry->position.reserve(gameEntry.initPosition.size() + nextMoveIdx);
             dataEntry->position.resize(gameEntry.initPosition.size() + nextMoveIdx);
             auto posEnd = std::copy(gameEntry.initPosition.begin(),
@@ -381,10 +395,16 @@ public:
         istream = nullptr;
         if (compressor)
             compressor.reset();
-        for (std::ifstream &fs : files)
+        for (std::ifstream &fs : files) {
+            fs.clear();  // drop any eof/fail state before rewinding
             fs.seekg(0);
+        }
         nextFileIdx = 0;
         nextMoveIdx = 0;
+        // Discard the cached game: without this, the first nextEntry() after a reset
+        // would serve the moves of the previously cached game again.
+        gameEntry.initPosition.clear();
+        gameEntry.moveSequence.clear();
         nextFile();
     }
 
@@ -415,7 +435,7 @@ private:
         struct EntryHead
         {
             uint32_t boardSize : 5;   // board size in [5-22]
-            uint32_t rule : 3;        // game rule: 0=freestyle, 1=standard, 4=renju
+            uint32_t rule : 3;        // gomocup rule number: 0=freestyle, 1=standard, 4=renju
             uint32_t result : 4;      // game outcome: 0=loss, 1=draw, 2=win (first player pov)
             uint32_t totalPly : 10;   // total number of stones on board after game ended
             uint32_t initPly : 10;    // initial number of stones on board when game started
@@ -434,7 +454,8 @@ private:
         // Check legality of entryhead
         if (ehead.boardSize < 5 || ehead.boardSize > 22)
             throw std::runtime_error("wrong boardsize in dataset");
-        if (ehead.rule != 0 && ehead.rule != 1 && ehead.rule != 4)
+        Rule rule = decodeWireRule(ehead.rule);
+        if (rule >= RULE_NB)
             throw std::runtime_error("wrong rule in dataset");
         if (ehead.result != 0 && ehead.result != 1 && ehead.result != 2)
             throw std::runtime_error("wrong result in dataset");
@@ -442,7 +463,7 @@ private:
             throw std::runtime_error("wrong ply in dataset");
 
         entry.boardSize = ehead.boardSize;
-        entry.rule      = Rule(ehead.rule);
+        entry.rule      = rule;
         entry.result    = Result(ehead.result);
         entry.totalPly  = ehead.totalPly;
         entry.initPosition.clear();
@@ -781,6 +802,7 @@ bool KatagoNumpyDataset::next(DataEntry *entry)
     }
 
     if (entry) {
+        entry->clearMoveData();  // free move data of the previous entry, if the entry is reused
         int numCells  = rawDataEntry.boardInput.size();
         int boardSize = (int)std::sqrt(numCells);  // square board
         boardArrayToPosSequence(rawDataEntry.boardInput, boardSize, entry->position);

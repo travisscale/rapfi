@@ -122,6 +122,20 @@ void DataWriter::writeEntriesInGame(const GameEntry                       &gameE
         startSide == WHITE ? gameEntry.result : Result(RESULT_WIN - gameEntry.result),
     };
 
+    // The loop below lends the game's move data pointers to dataEntry without transferring
+    // ownership. This guard clears the borrow on every exit path (declared after dataEntry,
+    // so it runs before dataEntry's destructor): if filter/writeEntry/push_back throws,
+    // dataEntry must not delete a pointer that gameEntry still owns.
+    struct BorrowGuard
+    {
+        DataEntry &entry;
+        ~BorrowGuard()
+        {
+            entry.moveDataTag = DataEntry::NO_MOVE_DATA;
+            entry.moveData    = nullptr;
+        }
+    } borrowGuard {dataEntry};
+
     for (auto &moveData : gameEntry.moveSequence) {
         dataEntry.move        = moveData.move;
         dataEntry.eval        = moveData.eval;
@@ -134,10 +148,6 @@ void DataWriter::writeEntriesInGame(const GameEntry                       &gameE
         dataEntry.position.push_back(moveData.move);
         dataEntry.result = Result(RESULT_WIN - dataEntry.result);
     }
-
-    // Remember to reset the move data pointer, as we do not own it
-    dataEntry.moveDataTag = DataEntry::NO_MOVE_DATA;
-    dataEntry.moveData    = nullptr;
 }
 
 // ==============================================
@@ -219,7 +229,7 @@ void SimpleBinaryDataWriter::writeEntry(const DataEntry &entry)
         uint16_t result : 2;     // game outcome: 0=loss, 1=draw, 2=win (side to move pov)
         uint16_t ply : 9;        // current number of stones on board
         uint16_t boardsize : 5;  // board size in [5-22]
-        uint16_t rule : 3;       // game rule: 0=freestyle, 1=standard, 4=renju
+        uint16_t rule : 3;       // gomocup rule number: 0=freestyle, 1=standard, 4=renju
         uint16_t move : 13;      // move output by the engine
     } ehead;
     uint16_t position[MAX_MOVES];  // move sequence that representing a position
@@ -227,7 +237,7 @@ void SimpleBinaryDataWriter::writeEntry(const DataEntry &entry)
     ehead.result    = entry.result;
     ehead.ply       = (uint16_t)entry.position.size();
     ehead.boardsize = entry.boardsize;
-    ehead.rule      = entry.rule == RENJU ? 4 : (uint16_t)entry.rule;
+    ehead.rule      = encodeWireRule(entry.rule);
     ehead.move      = encodeU16Move(entry.move);
     for (size_t i = 0; i < ehead.ply; i++) {
         position[i] = encodeU16Move(entry.position[i]);
@@ -406,7 +416,7 @@ private:
         struct EntryHead
         {
             uint32_t boardSize : 5;   // board size in [5-22]
-            uint32_t rule : 3;        // game rule: 0=freestyle, 1=standard, 4=renju
+            uint32_t rule : 3;        // gomocup rule number: 0=freestyle, 1=standard, 4=renju
             uint32_t result : 4;      // game outcome: 0=loss, 1=draw, 2=win (first player pov)
             uint32_t totalPly : 10;   // total number of stones on board after game ended
             uint32_t initPly : 10;    // initial number of stones on board when game started
@@ -417,7 +427,7 @@ private:
 
         Color startSide = gameEntry.initPosition.size() % 2 == 0 ? BLACK : WHITE;
         ehead.boardSize = gameEntry.boardsize;
-        ehead.rule      = gameEntry.rule == RENJU ? 4 : (uint16_t)gameEntry.rule;
+        ehead.rule      = encodeWireRule(gameEntry.rule);
         ehead.result =
             startSide == WHITE ? gameEntry.result : Result(RESULT_WIN - gameEntry.result);
         ehead.totalPly = totalPly;

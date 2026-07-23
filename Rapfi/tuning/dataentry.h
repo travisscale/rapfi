@@ -24,12 +24,33 @@
 #include <algorithm>
 #include <cassert>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace Tuning {
 
 /// Result represents the outcome of a finished game (based on current side to move).
 enum Result : uint8_t { RESULT_LOSS, RESULT_DRAW, RESULT_WIN, RESULT_UNKNOWN };
+
+/// The rule value stored in the .bin/.binpack dataset formats is the Gomocup protocol
+/// rule number, NOT the internal Rule enum: 0=freestyle, 1=standard, 4=renju. The wire
+/// encoding is shared with external format consumers (the Python Trainer and
+/// c-gomoku-cli) — do not change it without updating them. These two functions are the
+/// only place that knows the mapping; readers and writers must go through them.
+constexpr uint32_t encodeWireRule(Rule rule)
+{
+    return rule == RENJU ? 4 : uint32_t(rule);
+}
+
+/// Decode a wire rule number back to the internal Rule enum.
+/// @return The decoded rule, or RULE_NB if the wire value is not a valid encoding
+///     (callers should validate and reject such input).
+constexpr Rule decodeWireRule(uint32_t wireRule)
+{
+    if (wireRule == 4)
+        return RENJU;
+    return wireRule < 2 ? Rule(wireRule) : RULE_NB;
+}
 
 /// One move in the multi-pv.
 struct PVMove
@@ -82,16 +103,7 @@ struct DataEntry
         , moveDataTag {moveDataTag}
         , moveData(moveData)
     {}
-    ~DataEntry()
-    {
-        switch (moveDataTag) {
-        case MoveDataTag::NO_MOVE_DATA: assert(moveData == nullptr); break;
-        case MoveDataTag::POLICY_ARRAY_FLOAT: delete[] policyF32; break;
-        case MoveDataTag::POLICY_ARRAY_INT16: delete[] policyI16; break;
-        default: delete[] multiPvMoves; break;
-        }
-        moveData = nullptr;
-    }
+    ~DataEntry() { clearMoveData(); }
     DataEntry(const DataEntry &other)
         : position {other.position}
         , move {other.move}
@@ -129,8 +141,47 @@ struct DataEntry
         , result {other.result}
         , moveDataTag {other.moveDataTag}
     {
-        moveData       = other.moveData;
-        other.moveData = nullptr;
+        moveData          = other.moveData;
+        other.moveDataTag = NO_MOVE_DATA;
+        other.moveData    = nullptr;
+    }
+    /// Unified copy/move assignment (copy-and-swap). The by-value parameter invokes the
+    /// copy or move constructor, and the previously owned move data is released when
+    /// `other` goes out of scope. Without this, the compiler-generated assignment would
+    /// shallow-copy the moveData pointer and double-free it.
+    DataEntry &operator=(DataEntry other) noexcept
+    {
+        swap(other);
+        return *this;
+    }
+
+    /// Swap all members with another entry.
+    void swap(DataEntry &other) noexcept
+    {
+        std::swap(position, other.position);
+        std::swap(move, other.move);
+        std::swap(eval, other.eval);
+        std::swap(boardsize, other.boardsize);
+        std::swap(rule, other.rule);
+        std::swap(result, other.result);
+        std::swap(moveDataTag, other.moveDataTag);
+        std::swap(moveData, other.moveData);
+    }
+
+    /// Free the owned move data (if any), then reset the tag to NO_MOVE_DATA and the
+    /// pointer to nullptr. Dataset readers call this before refilling a caller-supplied
+    /// entry, so reusing one DataEntry across next() calls does not leak the move data
+    /// of the previous call.
+    void clearMoveData()
+    {
+        switch (moveDataTag) {
+        case MoveDataTag::NO_MOVE_DATA: assert(moveData == nullptr); break;
+        case MoveDataTag::POLICY_ARRAY_FLOAT: delete[] policyF32; break;
+        case MoveDataTag::POLICY_ARRAY_INT16: delete[] policyI16; break;
+        default: delete[] multiPvMoves; break;
+        }
+        moveDataTag = NO_MOVE_DATA;
+        moveData    = nullptr;
     }
 
     /// Returns the current side to move, considering pass moves.
@@ -197,6 +248,13 @@ struct GameEntry
     GameEntry()                           = default;
     GameEntry(const GameEntry &other)     = delete;
     GameEntry(GameEntry &&other) noexcept = default;
+    /// Assignment is deleted entirely: the compiler-generated copy assignment would
+    /// shallow-copy the owned moveData pointers (double-free), and a defaulted move
+    /// assignment would leak the target's previously owned moveData (member-wise vector
+    /// move destroys MoveData elements without freeing what they point to). No caller
+    /// assigns GameEntry; implement these properly if that ever changes.
+    GameEntry &operator=(const GameEntry &other) = delete;
+    GameEntry &operator=(GameEntry &&other)      = delete;
     ~GameEntry()
     {
         for (auto &moveData : moveSequence) {

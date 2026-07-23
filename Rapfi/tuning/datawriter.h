@@ -68,7 +68,7 @@ private:
 ///     uint16_t result : 2;     // game outcome: 0=loss, 1=draw, 2=win (side to move pov)
 ///     uint16_t ply : 9;        // current number of stones on board
 ///     uint16_t boardsize : 5;  // board size in [5-22]
-///     uint16_t rule : 3;       // game rule: 0=freestyle, 1=standard, 4=renju
+///     uint16_t rule : 3;       // gomocup rule number: 0=freestyle, 1=standard, 4=renju
 ///     uint16_t move : 13;      // move output by the engine
 ///     uint16_t position[ply];  // move sequence that representing a position
 /// };
@@ -100,7 +100,7 @@ private:
 ///
 /// struct Entry {
 ///   uint32_t boardSize : 5;     // board size in [5-22]
-///   uint32_t rule : 3;          // game rule: 0=freestyle, 1=standard, 4=renju
+///   uint32_t rule : 3;          // gomocup rule number: 0=freestyle, 1=standard, 4=renju
 ///   uint32_t result : 4;        // game outcome: 0=loss, 1=draw, 2=win (first player pov)
 ///   uint32_t totalPly : 10;     // total number of stones on board after game ended
 ///   uint32_t initPly : 10;      // initial number of stones on board when game started

@@ -35,13 +35,13 @@
 #include <random>
 #include <stdexcept>
 
-static std::function<void()> signalFunc;
-static void                  setupSignalHandler(std::function<void()> handler)
+static std::function<void(int)> signalFunc;
+static void                     setupSignalHandler(std::function<void(int)> handler)
 {
     signalFunc         = std::move(handler);
     auto signalHandler = [](int signal) {
         if (signalFunc)
-            signalFunc();
+            signalFunc(signal);
     };
 
     std::signal(SIGINT, signalHandler);
@@ -206,10 +206,15 @@ GameEntry playOneGame(Board                            &board,
         searchValue  = mainThread->rootMoves[0].value;
         Pos bestMove = Search::Engine.ctx.bestMove;
         gameEntry.moveSequence.push_back({bestMove, Eval(searchValue)});
-        if (options.multiPV > 1) {
-            auto &moveData   = gameEntry.moveSequence.back();
-            int   numPVMoves = std::min<int>(options.multiPV, mainThread->rootMoves.size());
-            moveData.tag = DataEntry::MoveDataTag(DataEntry::MULTIPV_BEGIN + numPVMoves - 2);
+        // A multipv search can still yield a single root move (a forced defence, or
+        // renju forbidden points leaving one legal move). Such a ply must be recorded
+        // as a plain move: MULTIPV_BEGIN + 1 - 2 would underflow the tag into
+        // POLICY_ARRAY_INT16, making the data writer read a policy array that was
+        // never allocated.
+        int numPVMoves = std::min<int>(options.multiPV, mainThread->rootMoves.size());
+        if (options.multiPV > 1 && numPVMoves > 1) {
+            auto &moveData = gameEntry.moveSequence.back();
+            moveData.tag  = DataEntry::MoveDataTag(DataEntry::MULTIPV_BEGIN + numPVMoves - 2);
             moveData.multiPvMoves = new PVMove[numPVMoves - 1];
             for (int i = 1; i < numPVMoves; i++) {
                 auto &rm = mainThread->rootMoves[i];
@@ -415,11 +420,17 @@ void Command::selfplay(int argc, char *argv[])
         dataWriter = Tuning::makeDataWriter(cfg.dataWriterType, cfg.outputPath);
     }
 
-    // Setup signal handler to close dataset file when receiving signal
-    setupSignalHandler([&]() {
-        MESSAGEL("Gracefully exiting...");
+    // Setup signal handler to close dataset file when receiving signal. Termination
+    // requests exit cleanly; fault signals (SIGSEGV etc.) still flush the writer but
+    // must report the crash and exit nonzero instead of masquerading as success.
+    setupSignalHandler([&](int signal) {
+        bool requested = signal == SIGINT || signal == SIGTERM;
+        if (requested)
+            MESSAGEL("Gracefully exiting...");
+        else
+            ERRORL("Terminated by signal " << signal << ", flushing dataset...");
         dataWriter.reset();
-        std::exit(0);
+        std::exit(requested ? 0 : EXIT_FAILURE);
     });
 
     if (cfg.openings.size())
