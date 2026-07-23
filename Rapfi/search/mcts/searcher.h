@@ -34,24 +34,36 @@ namespace Search::MCTS {
 class MCTSSearcher : public Searcher
 {
 public:
-    /// Time controller
-    TimeControl timectl;
-    /// Printer for all search messages
-    SearchPrinter printer;
-    /// The node table for storing and finding all transposition nodes
+    /// The node table for storing and finding all transposition nodes.
+    /// Per-game memory: fully cleared only by clear(clearAllMemory=true).
     std::unique_ptr<NodeTable> nodeTable;
-    /// The root node of the MCTS tree
-    Node *root;
-    /// The searched position of last root node
-    std::vector<Pos> previousPosition;
-    /// The global node age to synchronize the node table
-    uint32_t globalNodeAge;
-    /// The number of selectable root moves, set by updateRootMovesData().
-    uint32_t numSelectableRootMoves;
-    // The last number of nodes that we have printed search outputs
-    uint64_t lastOutputNodes;
-    // The last time that we have printed search outputs
-    Time lastOutputTime;
+
+    /// Cross-search graph-reuse state. The node table is transposition-aware,
+    /// so this is a Monte-Carlo search *graph*, not a tree.
+    /// Lifecycle (preserved semantics): clear() nulls root only; globalNodeAge
+    /// resets only with clearAllMemory; previousPosition is never reset - a
+    /// stale one can skip recycleOldNodes on the first search of a new game
+    /// (documented quirk, queued as a behavior-change candidate).
+    struct GraphState
+    {
+        /// The root node of the MCTS search graph
+        Node *root = nullptr;
+        /// The searched position of last root node
+        std::vector<Pos> previousPosition;
+        /// The global node age to synchronize the node table
+        uint32_t globalNodeAge = 0;
+    } graph;
+
+    /// Per-search scratch, reset at the top of searchMain.
+    struct SearchScratch
+    {
+        /// The number of selectable root moves, set by updateRootMovesData().
+        uint32_t numSelectableRootMoves;
+        /// The last number of nodes that we have printed search outputs
+        uint64_t lastOutputNodes;
+        /// The last time that we have printed search outputs
+        Time lastOutputTime;
+    } scratch;
 
     MCTSSearcher();
     ~MCTSSearcher() = default;
@@ -65,28 +77,29 @@ public:
     size_t getMemoryLimit() const override;
 
     /// Clear the state of the searcher between two different games
-    void clear(ThreadPool &pool, bool clearAllMemory) override;
+    void clear(SearchEngine &pool, bool clearAllMemory) override;
 
-    /// The thinking entry point. When program receives search command, main
-    /// thread is started first and other threads are launched by main thread.
-    void searchMain(MainSearchThread &th) override;
+    /// The algorithm middle of one search session, called by the session
+    /// driver on the main search thread. Launches the worker threads and
+    /// returns the top-ranked root move (or nullptr on early-outs).
+    const RootMove *searchMain(SearchThread &th) override;
 
     /// The main best first search loop. It calls search() repeatedly until the stop
     /// condition is reached. Results are updated to thread bounded with the board.
     void search(SearchThread &th) override;
 
     /// Checks if current search reaches timeup condition.
-    bool checkTimeupCondition() override;
+    bool checkTimeupCondition(const TimeControl &timectl) override;
 
 private:
     /// Setup root node for the search
-    void setupRootNode(MainSearchThread &th);
+    void setupRootNode(SearchThread &th);
 
     /// Garbage collect all old nodes in the node table
-    void recycleOldNodes(MainSearchThread &th);
+    void recycleOldNodes(SearchThread &th);
 
     /// Rank the root moves and update PV, then print all root moves
-    void updateRootMovesData(MainSearchThread &th);
+    void updateRootMovesData(SearchThread &th);
 };
 
 }  // namespace Search::MCTS

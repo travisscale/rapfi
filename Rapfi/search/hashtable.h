@@ -45,7 +45,7 @@ public:
     /// size by reducing cluster count to half recursively.
     void resize(size_t hashSizeKB);
     /// Clear all hash entries. If multi-threading is enabled, clearing will be
-    /// performed in parallel with number of threads equals to `Threads.size()`.
+    /// performed in parallel with number of threads equals to `Engine.size()`.
     void clear();
     /// Probe the transposition table for a hash key.
     /// @return True if found a matched entry or a not used entry.

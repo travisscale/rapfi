@@ -53,11 +53,6 @@ struct ABSearchData : SearchData
 class ABSearcher : public Searcher
 {
 public:
-    /// Time controller
-    TimeControl timectl;
-    /// Printer for all search messages
-    SearchPrinter printer;
-
     // Time management information
     float previousTimeReduction;  // (keep for one game)
     Value previousBestValue;      // (keep for one game)
@@ -65,6 +60,7 @@ public:
     /// Lookup tables used for reduction/purning, where index is depth or moveCount.
     std::array<Depth, MAX_MOVES + 1> reductions[RULE_NB];
 
+    ABSearcher() : Searcher(true) {}
     ~ABSearcher() = default;
     std::unique_ptr<SearchData> makeSearchData(SearchThread &th) override
     {
@@ -78,27 +74,28 @@ public:
     size_t getMemoryLimit() const override;
 
     /// Clear main thread states (and TT) between different games.
-    void clear(ThreadPool &pool, bool clearAllMemory) override;
+    void clear(SearchEngine &pool, bool clearAllMemory) override;
 
-    /// The thinking entry point. When program receives search command, main
-    /// thread is started first and other threads are launched by main thread.
-    void searchMain(MainSearchThread &th) override;
+    /// The algorithm middle of one search session, called by the session
+    /// driver on the main search thread. Launches the worker threads and
+    /// returns the best thread's first root move (or nullptr on early-outs).
+    const RootMove *searchMain(SearchThread &th) override;
 
     /// The main iterative deeping search loop. It calls search() repeatedly with increasing depth
     /// until the stop condition is reached. Results are updated to thread bounded with the board.
     void search(SearchThread &th) override;
 
     /// Checks if current search reaches timeup condition.
-    bool checkTimeupCondition() override;
+    bool checkTimeupCondition(const TimeControl &timectl) override;
 
 private:
     /// Choose the next search depth by checking completed depth of all other
     /// threads and selecting the next depth with least working threads to
     /// avoid repeated searching.
-    int pickNextDepth(ThreadPool &threads, uint32_t thisId, int lastDepth) const;
+    int pickNextDepth(SearchEngine &threads, uint32_t thisId, int lastDepth) const;
 
     /// Pick thread with the best result according to eval and completed depth.
-    SearchThread *pickBestThread(ThreadPool &threads) const;
+    SearchThread *pickBestThread(SearchEngine &threads) const;
 };
 
 }  // namespace Search::AB

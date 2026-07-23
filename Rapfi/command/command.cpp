@@ -132,7 +132,7 @@ bool loadConfig()
     }
 
     if (success && Config::ClearHashAfterConfigLoaded)
-        Search::Threads.clear(true);
+        Search::Engine.clear(true);
 
     return success;
 }

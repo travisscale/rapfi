@@ -104,7 +104,7 @@ void HashTable::resize(size_t hashSizeKB)
     numBuckets = newNumBuckets;
 
     if (table) {
-        Threads.waitForIdle();
+        Engine.waitForIdle();
         MemAlloc::alignedLargePageFree(table);
         table = nullptr;
     }
@@ -140,13 +140,13 @@ void HashTable::clear()
 #if defined(MULTI_THREADING) && !defined(__EMSCRIPTEN__)
     // Clear hash table in a multi-threaded way
     std::vector<std::thread> threads;
-    size_t                   numThreads = std::max<size_t>(Threads.size(), 1);
+    size_t                   numThreads = std::max<size_t>(Engine.size(), 1);
     size_t                   stride     = numBuckets / numThreads;
 
     for (size_t idx = 0; idx < numThreads; idx++) {
         threads.emplace_back([=]() {
             // Thread binding gives faster search on systems with a first-touch policy
-            if (Threads.size() > 8)
+            if (Engine.size() > 8)
                 Numa::bindThisThread(idx);
 
             // Each thread will zero its part of the hash table

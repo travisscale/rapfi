@@ -72,6 +72,9 @@ struct HistTable
         ValueT get() const { return value; }
         void   operator<<(int bonus)
         {
+            // A Range of 0 marks a plain-storage table (e.g. CounterMoveHistory)
+            // whose entries must never receive graded bonuses via operator<<.
+            static_assert(Range > 0, "operator<< requires a graded table (Range > 0)");
             static_assert(Range <= std::numeric_limits<ValueT>::max());
             assert(std::abs(bonus) <= Range);  // Ensure bonus is in [-Range, Range]
             value += bonus - value * std::abs(bonus) / Range;

@@ -24,7 +24,6 @@
 namespace Search {
 
 class SearchThread;
-class MainSearchThread;
 class TimeControl;
 
 /// SearchPrinter controls all message outputs during searching. It should
@@ -32,21 +31,15 @@ class TimeControl;
 struct SearchPrinter
 {
     /// Print when search starts.
-    void printSearchStarts(MainSearchThread &th, const TimeControl &tc);
+    void printSearchStarts(SearchThread &th, const TimeControl &tc);
     /// Print when entering the subtree of one move.
-    void printEnteringMove(MainSearchThread  &th,
-                           const TimeControl &tc,
-                           int                pvIdx,
-                           int                rootDepth,
-                           Pos                move);
+    void
+    printEnteringMove(SearchThread &th, const TimeControl &tc, int pvIdx, int rootDepth, Pos move);
     /// Print when leaving the subtree of one move.
-    void printLeavingMove(MainSearchThread  &th,
-                          const TimeControl &tc,
-                          int                pvIdx,
-                          int                rootDepth,
-                          Pos                move);
+    void
+    printLeavingMove(SearchThread &th, const TimeControl &tc, int pvIdx, int rootDepth, Pos move);
     /// Print when getting the result of one move.
-    void printMoveResult(MainSearchThread  &th,
+    void printMoveResult(SearchThread      &th,
                          const TimeControl &tc,
                          int                pvIdx,
                          int                numPv,
@@ -55,7 +48,7 @@ struct SearchPrinter
                          Value              moveValue,
                          bool               isNewBest);
     /// Print when the eval is outside of search window (happens in aspiration search)
-    void printOutOfWindowResult(MainSearchThread  &th,
+    void printOutOfWindowResult(SearchThread      &th,
                                 const TimeControl &tc,
                                 int                rootDepth,
                                 int                pvIdx,
@@ -63,17 +56,14 @@ struct SearchPrinter
                                 Value              alpha,
                                 Value              beta);
     /// Print when one Pv search completes.
-    void printPvCompletes(MainSearchThread  &th,
-                          const TimeControl &tc,
-                          int                rootDepth,
-                          int                pvIdx,
-                          int                numPv);
+    void
+    printPvCompletes(SearchThread &th, const TimeControl &tc, int rootDepth, int pvIdx, int numPv);
     /// Print when one iterative depth completes.
-    void printDepthCompletes(MainSearchThread &th, const TimeControl &tc, int rootDepth);
+    void printDepthCompletes(SearchThread &th, const TimeControl &tc, int rootDepth);
     /// Print root moves after some visits completed. (MCTS)
-    void printRootMoves(MainSearchThread &th, const TimeControl &tc, size_t numRootMovesToDisplay);
+    void printRootMoves(SearchThread &th, const TimeControl &tc, size_t numRootMovesToDisplay);
     /// Print when search finishes.
-    void printSearchEnds(MainSearchThread  &th,
+    void printSearchEnds(SearchThread      &th,
                          const TimeControl &tc,
                          int                rootDepth,
                          SearchThread      &bestThread);
@@ -82,7 +72,7 @@ struct SearchPrinter
     /// @param moveValue The theoretical value of this best move.
     /// @param rootDepth The theoretical depth of thie best move.
     /// @param pv A optional Pv to print.
-    void printBestmoveWithoutSearch(MainSearchThread &th,
+    void printBestmoveWithoutSearch(SearchThread     &th,
                                     Pos               bestMove,
                                     Value             moveValue,
                                     int               rootDepth,
@@ -90,11 +80,11 @@ struct SearchPrinter
 
 private:
     /// Checks should we output realtime messages.
-    bool showRealtime(MainSearchThread &th, const TimeControl &tc, int rootDepth);
+    bool showRealtime(SearchThread &th, const TimeControl &tc, int rootDepth);
     /// Checks should we output realtime messages in move picking loop.
-    bool showRealtimeInLoop(MainSearchThread &th, const TimeControl &tc, int rootDepth);
+    bool showRealtimeInLoop(SearchThread &th, const TimeControl &tc, int rootDepth);
     /// @brief Checks should we output info.
-    bool showInfo(MainSearchThread &th);
+    bool showInfo(SearchThread &th);
 
     static constexpr int REALTIME_MIN_DEPTH   = 8;
     static constexpr int REALTIME_MIN_ELAPSED = 200;

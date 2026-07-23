@@ -21,7 +21,6 @@
 #include "../config.h"
 #include "../core/iohelper.h"
 #include "../game/board.h"
-#include "search.h"
 #include "searchthread.h"
 
 #include <cassert>
@@ -343,7 +342,7 @@ bool OpeningGenerator::next()
         if (Config::MessageMode != MsgMode::NONE)
             MESSAGEL("Searching balanced1 for opening " << board.positionString());
         if (putBalance1Move()) {
-            board.move(rule, Search::Threads.main()->rootMoves[0].pv[0]);
+            board.move(rule, Search::Engine.main()->rootMoves[0].pv[0]);
             return true;
         }
     }
@@ -354,8 +353,8 @@ bool OpeningGenerator::next()
         if (Config::MessageMode != MsgMode::NONE)
             MESSAGEL("Searching balanced2 for opening " << board.positionString());
         if (putBalance2Move()) {
-            board.move(rule, Search::Threads.main()->rootMoves[0].pv[0]);
-            board.move(rule, Search::Threads.main()->rootMoves[0].pv[1]);
+            board.move(rule, Search::Engine.main()->rootMoves[0].pv[0]);
+            board.move(rule, Search::Engine.main()->rootMoves[0].pv[1]);
             return true;
         }
     }
@@ -399,7 +398,7 @@ void OpeningGenerator::putRandomMoves(int numMoves, CandArea area)
 /// @return True if successfully found a balanced move.
 bool OpeningGenerator::putBalance1Move()
 {
-    using Search::Threads;
+    using Search::Engine;
 
     // Setup search options
     Search::SearchOptions options;
@@ -407,17 +406,17 @@ bool OpeningGenerator::putBalance1Move()
     options.disableOpeningQuery = true;
     options.balanceMode         = Search::SearchOptions::BALANCE_ONE;
 
-    Threads.clear(false);
-    assert(!Threads.empty());
+    Engine.clear(false);
+    assert(!Engine.empty());
 
     // First do fast check to see if this position is balanceable
     options.maxNodes = config.balance1FastCheckNodes;
     if (options.maxNodes > 0) {
-        Threads.startThinking(board, options);
-        Threads.waitForIdle();
+        Engine.startThinking(board, options);
+        Engine.waitForIdle();
 
         // Consider this position as unbalanceable if its initial value is too far
-        if (std::abs(Threads.main()->rootMoves[0].value) > config.balance1FastCheckWindow)
+        if (std::abs(Engine.main()->rootMoves[0].value) > config.balance1FastCheckWindow)
             return false;
     }
 
@@ -425,20 +424,20 @@ bool OpeningGenerator::putBalance1Move()
     options.maxNodes = std::max(config.balance1Nodes, config.balance1FastCheckNodes)
                        - config.balance1FastCheckNodes;
     if (options.maxNodes > 0) {
-        Threads.startThinking(board, options);
-        Threads.waitForIdle();
+        Engine.startThinking(board, options);
+        Engine.waitForIdle();
     }
 
     // Check if BALANCE1 has find a move that is balanced enough
-    assert(!Threads.main()->rootMoves.empty());
-    return std::abs(Threads.main()->rootMoves[0].value) <= config.balanceWindow;
+    assert(!Engine.main()->rootMoves.empty());
+    return std::abs(Engine.main()->rootMoves[0].value) <= config.balanceWindow;
 }
 
 /// Put two moves to make a balanced opening.
 /// @return True if successfully found a balanced move pair.
 bool OpeningGenerator::putBalance2Move()
 {
-    using Search::Threads;
+    using Search::Engine;
 
     // Setup search options
     Search::SearchOptions options;
@@ -447,15 +446,15 @@ bool OpeningGenerator::putBalance2Move()
     options.balanceMode         = Search::SearchOptions::BALANCE_TWO;
     options.maxNodes            = config.balance2Nodes;
 
-    Threads.clear(false);
-    assert(!Threads.empty());
+    Engine.clear(false);
+    assert(!Engine.empty());
 
     // Try BALANCE2 search
-    Threads.startThinking(board, options);
-    Threads.waitForIdle();
+    Engine.startThinking(board, options);
+    Engine.waitForIdle();
 
-    assert(!Threads.main()->rootMoves.empty());
-    return std::abs(Threads.main()->rootMoves[0].value) <= config.balanceWindow;
+    assert(!Engine.main()->rootMoves.empty());
+    return std::abs(Engine.main()->rootMoves[0].value) <= config.balanceWindow;
 }
 
 }  // namespace Opening

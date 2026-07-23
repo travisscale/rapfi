@@ -105,9 +105,9 @@ void Command::opengen(int argc, char *argv[])
     Config::NumIterationAfterSingularRoot = 64;
 
     // Start generating openings and write position strings to output stream
-    Search::Threads.searcher()->setMemoryLimit(hashSizeMb * 1024);
-    Search::Threads.setNumThreads(numThreads);
-    Search::Threads.clear(false);
+    Search::Engine.searcher()->setMemoryLimit(hashSizeMb * 1024);
+    Search::Engine.setNumThreads(numThreads);
+    Search::Engine.clear(false);
 
     Opening::OpeningGenerator og(boardsize, rule, cfg);
     Time                      startTime = now(), lastTime = startTime;

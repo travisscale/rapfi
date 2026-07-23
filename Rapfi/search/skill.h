@@ -46,7 +46,7 @@ public:
     bool     enabled() const { return level < 100; }
     int      pickDepth() const { return targetDepth; }
     uint32_t minMultiPv() const { return 2 + (100 - level) / 25; }
-    Pos      pick(ThreadPool &threads, size_t numMultiPV = 1);
+    Pos      pick(SearchEngine &threads, size_t numMultiPV = 1);
 
 private:
     static constexpr Value MaxRandomRange = Value(120);
@@ -58,7 +58,7 @@ private:
 
 /// Select a move among multiple root moves using a statistical rule
 /// dependent on 'level' (code from stockfish).
-inline Pos SkillMovePicker::pick(ThreadPool &threads, size_t numMultiPV)
+inline Pos SkillMovePicker::pick(SearchEngine &threads, size_t numMultiPV)
 {
     const auto &rootMoves = threads.main()->rootMoves;
     static PRNG prng      = PRNG::nondeterministic();  // time seed for randomness

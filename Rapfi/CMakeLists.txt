@@ -189,6 +189,7 @@ set(CORE_SOURCES
     search/movepick.cpp
     search/opening.cpp
     search/searchcommon.cpp
+    search/searchengine.cpp
     search/searchoutput.cpp
     search/searchthread.cpp
     search/timecontrol.cpp

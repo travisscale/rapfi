@@ -19,12 +19,9 @@
 #pragma once
 
 #include "../core/platform.h"
-#include "../database/dbclient.h"
-#include "../database/dbstorage.h"
-#include "../eval/evaluator.h"
 #include "searchcommon.h"
+#include "searchengine.h"
 #include "searcher.h"
-#include "timecontrol.h"
 
 #include <atomic>
 #include <functional>
@@ -39,20 +36,20 @@
 
 class Board;  // forward declaration
 
+namespace Database {
+class DBClient;  // forward declaration
+}
+
 namespace Search {
 
-class Searcher;    // forward declaration
-class ThreadPool;  // forward declaration
-
-/// SearchThread is the base class for all search algorithms. It contains per-thread
-/// states, including a board clone, evaluator, root moves list, as well as various
-/// heruistic states. All search algorithms must have a derived class from SearchThread
-/// to implement their search routines and handle thread-related search states.
+/// SearchThread holds all per-thread search resources: a board clone, an
+/// evaluator instance, a database client, the per-thread algorithm data and
+/// the root move list, plus the task-dispatch machinery. The main search
+/// thread is the one with id == 0 ("main" is a role, not a type).
 class SearchThread
 {
 private:
-    friend class MainSearchThread;
-    friend class ThreadPool;
+    friend class SearchEngine;
     Numa::NumaNodeId numaId;
     bool             running, exit;
 
@@ -69,7 +66,7 @@ public:
     /// Instantiate a new search thread.
     /// @param id ID of the new search thread, starting from 0 for main thread.
     /// @param bindGroup Whether to bind this thread to a NUMA group.
-    explicit SearchThread(ThreadPool &threadPool, uint32_t id);
+    explicit SearchThread(SearchEngine &searchEngine, uint32_t id);
     /// Start the thread loop. This should be called once after the thread is created.
     void init(bool bindGroup);
     /// Destory this search thread. Search must be stopped before entering.
@@ -96,8 +93,8 @@ public:
     /// The ID of this search thread.
     const uint32_t id;
 
-    /// Reference to the thread pool that this thread belongs to.
-    ThreadPool &threads;
+    /// Reference to the search engine that this thread belongs to.
+    SearchEngine &engine;
 
     /// Board instance of this thread
     std::unique_ptr<Board> board;
@@ -126,115 +123,6 @@ public:
     int selDepth;
 };
 
-/// MainSearchThread class is the master thread in the Lazy SMP algorithm.
-/// It also controls state needed in iterative deepening and time control.
-class MainSearchThread : public SearchThread
-{
-public:
-    MainSearchThread(ThreadPool &threadPool) : SearchThread::SearchThread(threadPool, 0) {}
-
-    /// Clear the main thread state between two search.
-    void clear() override;
-    /// Check exit condition (time/nodes) and set ThreadPool's terminate flag.
-    /// @return True if we should stop the search now.
-    void checkExit(uint32_t elapsedCalls = 1);
-    /// Mark pondering available for the last finished searching.
-    void markPonderingAvailable();
-    /// Start a custom task with all threads and wait for them to finish.
-    /// @param task The custom task to run in each thread.
-    /// @param includeSelf If true, the main thread will also run the task.
-    void runCustomTaskAndWait(std::function<void(SearchThread &)> task, bool includeSelf);
-
-    /// Current search options
-    SearchOptions  searchOptions;
-    SearchOptions &options() { return searchOptions; }
-
-    /// Action type of the search result
-    ActionType resultAction;
-    /// Searched best move result
-    Pos bestMove;
-    /// Calls count before exit condition check
-    uint32_t callsCnt;
-    /// Should we start pondering after finishing this move?
-    std::atomic_bool startPonderAfterThinking;
-    /// Is in pondering mode?
-    std::atomic_bool inPonder;
-};
-
-/// ThreadPool class is the container for all search threads. The first
-/// thread in the threadpool is assumed to be the main thread. ThreadPool
-/// also controls thread-related stuffs such as init, launching, stop and
-/// collect various accumalated statistics.
-class ThreadPool : public std::vector<std::unique_ptr<SearchThread>>
-{
-public:
-    /// Type of the function that creates an evaluator instance.
-    using EvaluatorMaker = std::unique_ptr<Evaluation::Evaluator>(int              boardSize,
-                                                                  Rule             rule,
-                                                                  Numa::NumaNodeId numaId);
-
-private:
-    friend class SearchThread;
-    friend class MainSearchThread;
-
-    std::atomic_bool                     terminate;
-    std::function<EvaluatorMaker>        evaluatorMaker;
-    std::unique_ptr<Searcher>            searcherPtr;
-    std::unique_ptr<Database::DBStorage> dbStoragePtr;
-
-    template <typename T>
-    T sum(std::atomic<T> SearchThread::*member, T init = T(0)) const
-    {
-        T sum = init;
-        for (const auto &th : *this)
-            sum += (th.get()->*member).load(std::memory_order_relaxed);
-        return sum;
-    }
-
-public:
-    /// Wait for (other) search threads to finish their current works.
-    /// @note When called inside the main thread, it will only wait for other
-    ///     threads to finish their current works, excluding the main thread itself.
-    void waitForIdle();
-    /// Destroy all old threads and creates requested amount of threads.
-    /// @param numThreads The number of threads to create.
-    /// @note New threads will immediately go to sleep in threadLoop().
-    ///     This must never be called in the worker threads.
-    void setNumThreads(size_t numThreads);
-    /// Setup current searcher to a search algorithm.
-    /// @param searcher The unique ptr to a search, must not be nullptr.
-    void setupSearcher(std::unique_ptr<Searcher> searcher);
-    /// @brief Setup a database storage instance to be used for searching.
-    /// @param dbStorage The unique ptr to a dbStorage instance,
-    ///     can be nullptr which means disable all usage of database.
-    void setupDatabase(std::unique_ptr<Database::DBStorage> dbStorage);
-    /// Setup evaluator maker for future evaluator creation.
-    void setupEvaluator(std::function<EvaluatorMaker> evaluatorMaker);
-    /// Start multi-threaded thinking for the given position.
-    /// @param board The position to start searching.
-    /// @param options Options of this search.
-    /// @param inPonder If true, it is considered as pondering mode. No message will be shown.
-    /// @param onStop Function to be called (in main thread) when search is finished or interrupted.
-    /// @note This is a non-blocking function. It returns immediately after starting all threads.
-    void startThinking(const Board          &board,
-                       const SearchOptions  &options,
-                       bool                  inPonder = false,
-                       std::function<void()> onStop   = nullptr);
-    /// Notify all threads to stop thinking immediately.
-    void stopThinking() { terminate.store(true, std::memory_order_relaxed); }
-    /// Clear all threads state, searcher state and thread pool state for a new game.
-    void clear(bool clearAllMemory);
-
-    MainSearchThread    *main() const { return static_cast<MainSearchThread *>(front().get()); }
-    Searcher            *searcher() const { return searcherPtr.get(); }
-    Database::DBStorage *dbStorage() const { return dbStoragePtr.get(); }
-    bool                 isTerminating() const { return terminate.load(std::memory_order_relaxed); }
-    uint64_t             nodesSearched() const { return sum(&SearchThread::numNodes); }
-
-    ThreadPool();
-    ~ThreadPool();
-};
-
 template <typename SearchDataType>
 inline SearchDataType *SearchThread::searchDataAs() const
 {
@@ -243,10 +131,15 @@ inline SearchDataType *SearchThread::searchDataAs() const
 
 inline SearchOptions &SearchThread::options() const
 {
-    assert(threads.main());
-    return threads.main()->searchOptions;
+    return engine.ctx.options;
 }
 
-extern ThreadPool Threads;
+inline uint64_t SearchEngine::nodesSearched() const
+{
+    uint64_t sum = 0;
+    for (const auto &th : threads_)
+        sum += th->numNodes.load(std::memory_order_relaxed);
+    return sum;
+}
 
 }  // namespace Search

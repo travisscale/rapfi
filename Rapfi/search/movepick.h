@@ -54,16 +54,8 @@ public:
     bool hasNormalizedPolicy() const { return useNormalizedPolicy; }
     /// Get the normalized policy in [0,1] of current move. Use after enable normalized policy.
     float curMoveNormalizePolicy() const { return curPolicy; }
-    /// Get the maximum policy score of all moves.
-    Score maxMovePolicy() const { return maxPolicyScore; }
-    /// Get the policy score of current move.
-    Score curMovePolicy() const { return curPolicyScore; }
     /// Get adjusted score of current move.
     Score curMoveScore() const { return curScore; }
-    /// Get the policy score difference between current move and the best move.
-    Score curMovePolicyDiff() const { return maxPolicyScore - curPolicyScore; }
-    /// Get the adjusted score difference between current move and the best move.
-    Score curMoveScoreDiff() const { return maxScore - curScore; }
 
 private:
     enum PickType { Next, Best };
@@ -93,8 +85,8 @@ private:
     bool                      hasPolicy;
     bool                      useNormalizedPolicy;
     float                     normalizedPolicyTemp;
-    Score                     curScore, maxScore;
-    Score                     curPolicyScore, maxPolicyScore;
+    Score                     curScore;
+    Score                     maxPolicyScore;
     float                     curPolicy;
     ScoredMove               *curMove, *endMove;
     ScoredMove                moves[MAX_MOVES];

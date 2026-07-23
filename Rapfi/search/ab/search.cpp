@@ -20,7 +20,9 @@
 #include "../../core/hash.h"
 #include "../../core/iohelper.h"
 #include "../../core/platform.h"
+#include "../../database/dbclient.h"
 #include "../../eval/eval.h"
+#include "../../eval/evaluator.h"
 #include "../../game/board.h"
 #include "../../game/movegen.h"
 #include "../../game/wincheck.h"
@@ -37,7 +39,9 @@
 #include <cassert>
 #include <cmath>
 #include <iomanip>
+#include <optional>
 #include <random>
+#include <tuple>
 
 using namespace Search;
 using namespace Search::AB;
@@ -87,7 +91,7 @@ size_t ABSearcher::getMemoryLimit() const
     return TT.hashSizeKB();
 }
 
-void ABSearcher::clear(ThreadPool &pool, bool clearAllMemory)
+void ABSearcher::clear(SearchEngine &pool, bool clearAllMemory)
 {
     // Clear time control variables for one game
     previousTimeReduction = 1.0f;
@@ -99,50 +103,10 @@ void ABSearcher::clear(ThreadPool &pool, bool clearAllMemory)
         TT.clear();
 }
 
-void ABSearcher::searchMain(MainSearchThread &th)
+const RootMove *ABSearcher::searchMain(SearchThread &th)
 {
+    SearchContext &ctx  = th.engine.ctx;
     SearchOptions &opts = th.options();
-
-    // Probe opening database and find if there is a prepared opening
-    if (!opts.disableOpeningQuery
-        && Opening::probeOpening(*th.board, opts.rule, th.resultAction, th.bestMove)) {
-        th.markPonderingAvailable();
-        return;
-    }
-
-    // Check for immediate move
-    if (th.rootMoves.empty()) {
-        // If there is no stones on board, it is possible that the opponent played a pass
-        // move at the start of one game. We just choose the center location to play.
-        if (th.board->nonPassMoveCount() == 0) {
-            th.bestMove = th.board->centerPos();
-            return;
-        }
-
-        // Return the first empty position if we might find a forced forbidden
-        // point mate in Renju, or all legal points have been blocked.
-        FOR_EVERY_EMPTY_POS(th.board, pos)
-        {
-            th.bestMove = pos;
-            printer.printBestmoveWithoutSearch(th, pos, mated_in(0), 0, nullptr);
-            return;
-        }
-
-        return;  // abnormal case: GUI might have a bug
-    }
-    // If we are winning, return directly
-    else if (th.board->p4Count(th.board->sideToMove(), A_FIVE)) {
-        assert(th.board->cell(th.rootMoves[0].pv[0]).pattern4[th.board->sideToMove()] == A_FIVE);
-        th.rootMoves[0].value = mate_in(1);
-        th.bestMove           = th.rootMoves[0].pv[0];
-
-        printer.printBestmoveWithoutSearch(th,
-                                           th.rootMoves[0].pv[0],
-                                           th.rootMoves[0].value,
-                                           1,
-                                           &th.rootMoves[0].pv);
-        return;
-    }
 
     // Check for forced database move
     Pos   dbWinMove  = Pos::NONE;
@@ -167,27 +131,23 @@ void ABSearcher::searchMain(MainSearchThread &th)
         }
 
         if (bestMove) {
-            th.bestMove = bestMove;
-            printer.printBestmoveWithoutSearch(th, bestMove, bestMoveValue, 0, nullptr);
-            return;
+            ctx.bestMove = bestMove;
+            ctx.printer.printBestmoveWithoutSearch(th, bestMove, bestMoveValue, 0, nullptr);
+            return nullptr;
         }
     }
 
-    // Init time management and transposition table
-    timectl.init(opts.turnTime,
-                 opts.matchTime,
-                 opts.timeLeft,
-                 {th.board->ply(), th.board->movesLeft()});
+    // Init transposition table generation
     TT.incGeneration();
 
     // Starts worker threads, then starts main thread
-    printer.printSearchStarts(th, timectl);
-    th.runCustomTaskAndWait([this](SearchThread &t) { search(t); }, true);
+    ctx.printer.printSearchStarts(th, ctx.timectl);
+    th.engine.runOnAllThreads([this](SearchThread &t) { search(t); }, true);
 
     // Select best thread according to eval and completed depth when needed
     SearchThread *bestThread = &th;
     if (opts.multiPV == 1 && !SkillMovePicker(opts.strengthLevel).enabled() && !opts.balanceMode)
-        bestThread = pickBestThread(th.threads);
+        bestThread = pickBestThread(th.engine);
 
     if (opts.balanceMode == SearchOptions::BALANCE_NONE && dbWinMove
         && bestThread->rootMoves[0].value < VALUE_MATE_IN_MAX_PLY) {
@@ -201,38 +161,25 @@ void ABSearcher::searchMain(MainSearchThread &th)
         }
         // If database winning move is not in rootmoves, return it directly
         else {
-            th.bestMove = dbWinMove;
-            printer.printBestmoveWithoutSearch(th, dbWinMove, dbWinValue, dbWinDepth, nullptr);
-            return;
+            ctx.bestMove = dbWinMove;
+            ctx.printer.printBestmoveWithoutSearch(th, dbWinMove, dbWinValue, dbWinDepth, nullptr);
+            return nullptr;
         }
     }
 
     // Output search statistic infomation
-    printer.printSearchEnds(th,
-                            timectl,
-                            bestThread->searchDataAs<ABSearchData>()->completedDepth,
-                            *bestThread);
+    ctx.printer.printSearchEnds(th,
+                                ctx.timectl,
+                                bestThread->searchDataAs<ABSearchData>()->completedDepth,
+                                *bestThread);
 
-    // Do not record bestmove in pondering
-    if (th.inPonder)
-        return;
-
-    // Record best move
-    th.bestMove = bestThread->rootMoves[0].pv[0];
-
-    // If swap check is needed, make swap decision according to the rule
-    if (opts.swapable)
-        th.resultAction =
-            Opening::decideAction(*th.board, opts.rule, bestThread->rootMoves[0].value);
-    else if (opts.balanceMode == SearchOptions::BalanceMode::BALANCE_TWO)
-        th.resultAction = ActionType::Move2;
-    else
-        th.resultAction = ActionType::Move;
+    return &bestThread->rootMoves[0];
 }
 
 void ABSearcher::search(SearchThread &th)
 {
     ABSearchData     &sd        = *th.searchDataAs<ABSearchData>();
+    SearchContext    &ctx       = th.engine.ctx;
     SearchOptions    &options   = th.options();
     Value             initValue = Evaluation::evaluate(*th.board, options.rule);
     StackArray        stackArray(MAX_PLY, initValue);
@@ -241,7 +188,7 @@ void ABSearcher::search(SearchThread &th)
     int               lastMoveChangeDepth = 0;
     float             timeReduction = 1.0f, totalBestMoveChanges = 0.0f;
     int               firstMateDepth = 0, firstSingularDepth = 0;
-    MainSearchThread *mainThread = (&th == th.threads.main() ? th.threads.main() : nullptr);
+    SearchThread     *mainThread = (&th == th.engine.main() ? th.engine.main() : nullptr);
 
     // Init search depth range
     int maxDepth   = std::min(options.maxDepth, std::clamp(Config::MaxSearchDepth, 2, MAX_DEPTH));
@@ -258,10 +205,10 @@ void ABSearcher::search(SearchThread &th)
     // Limit multiPV to the size of root moves
     sd.multiPv = std::min<uint32_t>(sd.multiPv, th.rootMoves.size());
 
-    for (sd.rootDepth = startDepth; sd.rootDepth <= maxDepth && !th.threads.isTerminating();
-         sd.rootDepth = pickNextDepth(th.threads, th.id, sd.rootDepth)) {
+    for (sd.rootDepth = startDepth; sd.rootDepth <= maxDepth && !th.engine.isTerminating();
+         sd.rootDepth = pickNextDepth(th.engine, th.id, sd.rootDepth)) {
         // Sync modifications in database client to database storage
-        if (th.dbClient && timectl.elapsed() > 5000)
+        if (th.dbClient && ctx.timectl.elapsed() > 5000)
             th.dbClient->sync(false);
 
         // Age out PV variability metric when depth increases
@@ -275,7 +222,7 @@ void ABSearcher::search(SearchThread &th)
         }
 
         // MultiPV loop. We perform a full root search for each PV line
-        for (sd.pvIdx = 0; sd.pvIdx < sd.multiPv && !th.threads.isTerminating(); ++sd.pvIdx) {
+        for (sd.pvIdx = 0; sd.pvIdx < sd.multiPv && !th.engine.isTerminating(); ++sd.pvIdx) {
             // Reset selDepth for each depth and each PV line
             th.selDepth = 0;
 
@@ -288,7 +235,8 @@ void ABSearcher::search(SearchThread &th)
 
             // Send out various infomation to GUI
             if (mainThread)
-                printer.printPvCompletes(*mainThread, timectl, sd.rootDepth, sd.pvIdx, sd.multiPv);
+                ctx.printer
+                    .printPvCompletes(*mainThread, ctx.timectl, sd.rootDepth, sd.pvIdx, sd.multiPv);
 
             // Sort the PV lines searched so far. When we are in balance move mode,
             // sort according to negetive absolute value rather than its original value.
@@ -303,7 +251,7 @@ void ABSearcher::search(SearchThread &th)
         }
 
         // If search is complete, update completed depth.
-        if (!th.threads.isTerminating()) {
+        if (!th.engine.isTerminating()) {
             sd.completedDepth = sd.rootDepth;
         }
 
@@ -325,41 +273,41 @@ void ABSearcher::search(SearchThread &th)
             firstSingularDepth = sd.rootDepth;
 
         // Stop thinking if we are not in analysis mode, inPonder mode, or random move mode
-        if (!options.isAnalysisMode() && !th.threads.main()->inPonder && !rmp.enabled()) {
+        if (!options.isAnalysisMode() && !ctx.inPonder && !rmp.enabled()) {
             if (isMate && sd.rootDepth - firstMateDepth >= Config::NumIterationAfterMate)
-                th.threads.stopThinking();
+                th.engine.stopThinking();
             else if (sd.singularRoot
                      && sd.rootDepth - firstSingularDepth
                             >= Config::NumIterationAfterSingularRoot) {
-                th.threads.main()->markPonderingAvailable();
-                th.threads.stopThinking();
+                ctx.markPonderingAvailable();
+                th.engine.stopThinking();
             }
         }
 
         // Send out search result of this depth
         if (mainThread)
-            printer.printDepthCompletes(*mainThread, timectl, sd.completedDepth);
+            ctx.printer.printDepthCompletes(*mainThread, ctx.timectl, sd.completedDepth);
 
         // Check do we have time for the next iteration?
-        if (options.timeLimit && !th.threads.isTerminating()) {
+        if (options.timeLimit && !th.engine.isTerminating()) {
             // Accumulate all best move changes across threads
-            for (const auto &th : th.threads) {
+            for (const auto &th : th.engine) {
                 totalBestMoveChanges += sd.bestMoveChanges;
                 sd.bestMoveChanges = 0;
             }
 
             // Stop the search if exceeds time limit (do not stop in inPonder mode)
-            if (timectl.checkStop({sd.rootDepth,
-                                   lastMoveChangeDepth,
-                                   bestValue,
-                                   previousBestValue,
-                                   previousTimeReduction,
-                                   totalBestMoveChanges / th.threads.size()},
-                                  timeReduction)
-                && !mainThread->inPonder) {
+            if (ctx.timectl.checkStop({sd.rootDepth,
+                                       lastMoveChangeDepth,
+                                       bestValue,
+                                       previousBestValue,
+                                       previousTimeReduction,
+                                       totalBestMoveChanges / th.engine.size()},
+                                      timeReduction)
+                && !ctx.inPonder) {
                 // Start pondering after foreground searching naturally ended
-                mainThread->markPonderingAvailable();
-                th.threads.stopThinking();
+                ctx.markPonderingAvailable();
+                th.engine.stopThinking();
             }
         }
     }
@@ -379,16 +327,16 @@ void ABSearcher::search(SearchThread &th)
     if (rmp.enabled()) {
         std::swap(
             th.rootMoves[0],
-            *std::find(th.rootMoves.begin(), th.rootMoves.end(), rmp.pick(th.threads, sd.multiPv)));
+            *std::find(th.rootMoves.begin(), th.rootMoves.end(), rmp.pick(th.engine, sd.multiPv)));
     }
 }
 
-bool ABSearcher::checkTimeupCondition()
+bool ABSearcher::checkTimeupCondition(const TimeControl &timectl)
 {
     return timectl.elapsed() >= timectl.maximum();
 }
 
-int ABSearcher::pickNextDepth(ThreadPool &threads, uint32_t thisId, int lastDepth) const
+int ABSearcher::pickNextDepth(SearchEngine &threads, uint32_t thisId, int lastDepth) const
 {
     if (thisId == 0 || threads.size() < 3)
         return lastDepth + 1;
@@ -411,12 +359,12 @@ int ABSearcher::pickNextDepth(ThreadPool &threads, uint32_t thisId, int lastDept
     }
 }
 
-SearchThread *ABSearcher::pickBestThread(ThreadPool &threads) const
+SearchThread *ABSearcher::pickBestThread(SearchEngine &threads) const
 {
     SearchThread *bestThread = threads.main();
 
     // In case of database recording mode, only use main thread result.
-    if (bestThread->dbClient && !Config::DatabaseReadonlyMode)
+    if (bestThread->dbClient && !threads.ctx.dbParams.readonlyMode)
         return bestThread;
 
     // Find minimum value of all threads
@@ -462,11 +410,11 @@ namespace {
 /// of a fail high/low, re-search with a bigger window until we don't fail high/low anymore.
 void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue, Depth depth)
 {
-    Value         delta, alpha, beta;
-    SearchThread *thisThread  = board.thisThread();
-    ABSearchData *searchData  = thisThread->searchDataAs<ABSearchData>();
-    ABSearcher   *searcher    = static_cast<ABSearcher *>(thisThread->threads.searcher());
-    int           failHighCnt = 0;
+    Value          delta, alpha, beta;
+    SearchThread  *thisThread  = board.thisThread();
+    ABSearchData  *searchData  = thisThread->searchDataAs<ABSearchData>();
+    SearchContext &ctx         = thisThread->engine.ctx;
+    int            failHighCnt = 0;
 
     // Reset aspiration window starting size if aspiration windows is enabled and
     // we are not in balance move mode. (no aspiration window for balance move mode).
@@ -506,7 +454,7 @@ void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue,
                              RootMoveValueComparator {});
 
         // If search has been stopped, break immediately. Sorting result is safe to use.
-        if (thisThread->threads.isTerminating())
+        if (thisThread->engine.isTerminating())
             break;
 
         // Update current move's sel depth
@@ -514,13 +462,13 @@ void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue,
 
         // Print value out of window result
         if (value <= alpha || value >= beta)
-            searcher->printer.printOutOfWindowResult(*static_cast<MainSearchThread *>(thisThread),
-                                                     searcher->timectl,
-                                                     searchData->rootDepth,
-                                                     searchData->pvIdx,
-                                                     searchData->multiPv,
-                                                     alpha,
-                                                     beta);
+            ctx.printer.printOutOfWindowResult(*thisThread,
+                                               ctx.timectl,
+                                               searchData->rootDepth,
+                                               searchData->pvIdx,
+                                               searchData->multiPv,
+                                               alpha,
+                                               beta);
 
         // In case of failing low/high increase aspiration window and re-search,
         // otherwise exit the loop.
@@ -610,6 +558,429 @@ Value search(Rule         rule,
     }
 }
 
+/// Holds the result of a database probe at a node, consumed by the later steps
+/// of search<Rule,NT> (shallow-pruning gate, terminate-write, record write,
+/// best-value adjust).
+struct DBProbeState
+{
+    Database::DBRecord record;      // valid only when hit
+    bool  hit        = false;
+    bool  checkChild = false;       // child records may exist: disables shallow pruning
+    Bound labelBound = BOUND_NONE;  // bound implied by a WIN/LOSE/DRAW label
+    Bound bound      = BOUND_NONE;  // bound from the record's depth-bound field
+    Value value      = VALUE_NONE;  // record value converted to a search value
+};
+
+/// Step 5 of search<Rule,NT>: query the database and try a database cut.
+/// May widen (alpha, beta) to the full window for PV database cuts.
+/// @return A value to return immediately from the node (block move or database
+///     cut), or std::nullopt to continue searching.
+template <Rule Rule, NodeType NT>
+std::optional<Value> probeDatabaseAtNode(Board        &board,
+                                         SearchStack  *ss,
+                                         Value        &alpha,
+                                         Value        &beta,
+                                         Depth         depth,
+                                         HashKey       posKey,
+                                         DBProbeState &db)
+{
+    constexpr bool PvNode   = NT == PV || NT == Root;
+    constexpr bool RootNode = NT == Root;
+
+    SearchThread *thisThread = board.thisThread();
+    if (!thisThread->dbClient)
+        return std::nullopt;
+
+    ABSearchData               *searchData = thisThread->searchDataAs<ABSearchData>();
+    SearchOptions              &options    = thisThread->options();
+    const DatabaseSearchParams &dbParams   = thisThread->engine.ctx.dbParams;
+
+    Database::DBClient &dbClient          = *thisThread->dbClient;
+    int                 queryPlyIncrement = searchData->rootDepth
+                            / (PvNode ? dbParams.queryPVIterPerPlyIncrement
+                                      : dbParams.queryNonPVIterPerPlyIncrement);
+    int queryPly = dbParams.queryPly + queryPlyIncrement;
+
+    if (ss->skipMove           // Skip query in singular extension
+        || ss->ply > queryPly  // Only query in the first plies to avoid large speed loss
+        || !dbClient.query(board, Rule, db.record))
+        return std::nullopt;
+
+    db.hit        = true;
+    db.value      = storedValueToSearchValue(db.record.value, ss->ply);
+    db.bound      = db.record.bound();
+    db.checkChild = ss->ply < queryPly;
+
+    bool tryCut = true;
+    switch (db.record.label) {
+    case Database::LABEL_NULL: tryCut = false; break;
+    case Database::LABEL_BLOCKMOVE:  // Block this move
+        return -VALUE_BLOCKED;
+    case Database::LABEL_WIN:  // Win for opponent, loss for self
+        db.value = std::min(db.value, VALUE_MATED_FROM_DATABASE);
+        if (db.bound != BOUND_EXACT)
+            db.bound = BOUND_UPPER;
+        db.labelBound = BOUND_UPPER;
+        break;
+    case Database::LABEL_LOSE:  // Loss for opponent, win for self
+        db.value = std::max(db.value, VALUE_MATE_FROM_DATABASE);
+        if (db.bound != BOUND_EXACT)
+            db.bound = BOUND_LOWER;
+        db.labelBound = BOUND_LOWER;
+        break;
+    case Database::LABEL_DRAW:  // Draw for both side
+        db.value      = getDrawValue(board, options, ss->ply);
+        db.bound      = BOUND_EXACT;
+        db.labelBound = BOUND_EXACT;
+        break;
+    default:  // Read depth, bound, value
+        break;
+    }
+
+    if (tryCut && !RootNode) {
+        int  dbDepth = db.record.depth() + dbParams.queryResultDepthBoundBias;
+        bool dbCut   = dbDepth > depth
+                     && (db.value >= beta ? (db.bound & BOUND_LOWER) : (db.bound & BOUND_UPPER));
+        if (!PvNode && dbCut
+            || db.labelBound == BOUND_LOWER && db.value >= beta   // Win-score-cut
+            || db.labelBound == BOUND_UPPER && db.value <= alpha  // Loss-score-cut
+            || db.labelBound == BOUND_EXACT                       // Draw-score-cut
+        ) {
+            TT.store(posKey,
+                     db.value,
+                     ss->staticEval,
+                     ss->ttPv,
+                     db.bound,
+                     Pos::NONE,
+                     db.labelBound == BOUND_EXACT ? (int)DEPTH_UPPER_BOUND
+                                                  : std::min(dbDepth, (int)DEPTH_UPPER_BOUND),
+                     ss->ply);
+            return db.value;
+        }
+
+        // Expand search window for database cut in PvNode
+        if (PvNode && (dbCut || db.labelBound != BOUND_NONE))
+            alpha = -VALUE_INFINITE, beta = VALUE_INFINITE;
+    }
+
+    return std::nullopt;
+}
+
+/// Step 20 of search<Rule,NT>: write the search result into the database.
+template <Rule Rule, NodeType NT>
+void writeDatabaseRecord(Board              &board,
+                         SearchStack        *ss,
+                         Depth               depth,
+                         Value               bestValue,
+                         Bound               bound,
+                         const DBProbeState &db)
+{
+    constexpr bool PvNode   = NT == PV || NT == Root;
+    constexpr bool RootNode = NT == Root;
+
+    SearchThread               *thisThread = board.thisThread();
+    ABSearchData               *searchData = thisThread->searchDataAs<ABSearchData>();
+    SearchOptions              &options    = thisThread->options();
+    const DatabaseSearchParams &dbParams   = thisThread->engine.ctx.dbParams;
+    Pos                         skipMove   = ss->skipMove;
+
+    if (thisThread->dbClient
+        && !dbParams.readonlyMode             // Never write in database readonly mode
+        && !options.balanceMode               // Never write when we are doing balanced search
+        && (!skipMove || ss->dbChildWritten)  // Never write when in singular extension
+        && ss->numNullMoves == 0              // Never write when in null move search
+        && !(RootNode && (searchData->pvIdx || options.blockMoves.size()))) {
+        bool exact  = PvNode && bound == BOUND_EXACT;
+        bool isWin  = bestValue > VALUE_MATE_IN_MAX_PLY && (bound & BOUND_LOWER);
+        bool isLoss = bestValue < VALUE_MATED_IN_MAX_PLY && (bound & BOUND_UPPER);
+
+        int writePly, writeDepth;
+        if (isWin || isLoss) {
+            if (ss->ply <= dbParams.mateWritePly
+                && mate_step(bestValue, ss->ply) >= dbParams.mateWriteMinStep) {
+                writePly   = dbParams.mateWritePly;
+                writeDepth = exact ? dbParams.mateWriteMinDepthExact
+                                   : dbParams.mateWriteMinDepthNonExact;
+            }
+            else
+                writePly = -1, writeDepth = MAX_DEPTH;
+        }
+        else {
+            writePly   = exact ? dbParams.pvWritePly : dbParams.nonPVWritePly;
+            writeDepth = exact ? (std::abs(bestValue) <= dbParams.writeValueRange
+                                      ? dbParams.pvWriteMinDepth
+                                      : MAX_DEPTH)
+                         : bound == BOUND_UPPER ? (bestValue <= dbParams.writeValueRange
+                                                       ? dbParams.nonPVWriteMinDepth
+                                                       : MAX_DEPTH)
+                                                : (-bestValue >= dbParams.writeValueRange
+                                                       ? dbParams.nonPVWriteMinDepth
+                                                       : MAX_DEPTH);
+        }
+
+        if (RootNode
+            || ss->dbChildWritten  // Write anyway if we have children that have already written
+            || PvNode && ss->ply <= 1 + isLoss
+                   && options.multiPV > 1   // Always add new record in multipv
+            || ss->ply <= writePly - isWin  // Loss label are recorded one ply less
+                   && (db.hit || depth >= writeDepth + isWin)
+            || db.hit && (isWin || isLoss)  // Always try overwrite existing record with W/L record
+            || PvNode && db.hit             // Try overwrite existing winrate with newer winrate
+                   && ss->ply <= (exact ? dbParams.exactOverwritePly
+                                        : dbParams.nonExactOverwritePly)) {
+            // Assume we have already read record from the database
+            Database::DBRecord newRecord;
+
+            // Assign determined label if we have a sure win/loss
+            // Do not inherit determined label from queried record,
+            // only write determined label when we have searched it.
+            newRecord.label = isWin    ? Database::LABEL_LOSE  // Loss for opponent
+                              : isLoss ? Database::LABEL_WIN   // Win for opponent
+                              : db.hit && !Database::isDeterminedLabel(db.record.label)
+                                  ? db.record.label
+                                  : Database::LABEL_NONE;
+            newRecord.value = searchValueToStoredValue(bestValue, ss->ply);
+            newRecord.setDepthBound((int)depth, bound);
+
+            // Write if there is no db hit, or the new record satisfy the overwrite rule
+            if (!db.hit
+                || Database::checkOverwrite(db.record, newRecord, dbParams.overwriteRule)) {
+                thisThread->dbClient->save(board,
+                                           Rule,
+                                           newRecord,
+                                           db.hit ? Database::OverwriteRule::Always
+                                                  : dbParams.overwriteRule);
+                if (dbParams.mandatoryParentWrite)
+                    (ss - 1)->dbChildWritten = true;
+            }
+        }
+    }
+}
+
+/// Step 6 of search<Rule,NT>: compute the static evaluation when the opponent
+/// has no four/five threat, consulting/updating the TT entry. Sets ss->staticEval.
+/// @return Pair of (eval estimation, static eval improvement over two plies).
+template <Rule Rule>
+std::pair<Value, int> computeStaticEval(Board       &board,
+                                        SearchStack *ss,
+                                        Value        alpha,
+                                        Value        beta,
+                                        HashKey      posKey,
+                                        Pos          skipMove,
+                                        bool         ttHit,
+                                        Value        ttValue,
+                                        Value        ttEval,
+                                        Bound        ttBound)
+{
+    Value eval;
+    if (ttHit) {
+        // Never assume anything about values stored in TT
+        ss->staticEval = eval = ttEval;
+        if (eval == VALUE_NONE)
+            ss->staticEval = eval = Evaluation::evaluate<Rule>(board, alpha, beta);
+
+        // Try to use ttValue as a better eval estimation
+        if (ttValue != VALUE_NONE && (ttBound & (ttValue > eval ? BOUND_LOWER : BOUND_UPPER)))
+            eval = ttValue;
+    }
+    else {
+        ss->staticEval = eval = Evaluation::evaluate<Rule>(board, alpha, beta);
+
+        // Save static evaluation into transposition table
+        if (!skipMove)
+            TT.store(posKey,
+                     VALUE_NONE,
+                     ss->staticEval,
+                     ss->ttPv,
+                     BOUND_NONE,
+                     Pos::NONE,
+                     (int)DEPTH_NONE,
+                     ss->ply);
+    }
+
+    return {eval, ss->staticEval - (ss - 2)->staticEval};
+}
+
+/// Compute a complexity metric of the position from both sides' pattern4 counts.
+inline float positionComplexity(const Board &board, Color self, Color oppo)
+{
+    uint16_t complexCount = 1;
+    for (int pat4 = L_FLEX2; pat4 <= D_BLOCK4_PLUS; pat4++) {
+        complexCount += board.p4Count(self, (Pattern4)pat4);
+        complexCount += board.p4Count(oppo, (Pattern4)pat4);
+    }
+    return ::logf(complexCount);
+}
+
+/// Heuristic classification of the move about to be searched, consumed by the
+/// pruning (step 12), extension (step 13) and reduction (step 15) heuristics.
+struct MoveTraits
+{
+    bool important;  // self J_FLEX2_2X+ / oppo H_FLEX3+ / renju false-forbidden
+    bool trivial;    // no pattern for either side
+    bool distract;   // far from both our own and the opponent's last moves
+    int  distSelf;   // distance to our own move two plies ago
+    int  distOppo;   // distance to the opponent's last move
+};
+
+/// Classify the move about to be searched. Requires ss->moveP4 to be set.
+template <Rule Rule>
+MoveTraits classifyMove(SearchStack *ss, Pos move, Color self, Color oppo)
+{
+    MoveTraits mt;
+    // False forbidden move in Renju is considered as important move
+    mt.important = ss->moveP4[self] >= J_FLEX2_2X || ss->moveP4[oppo] >= H_FLEX3
+                   || (Rule == Rule::RENJU && ss->moveP4[BLACK] == FORBID);
+    mt.trivial  = ss->moveP4[BLACK] == NONE && ss->moveP4[WHITE] == NONE;
+    mt.distOppo = Pos::distance(move, (ss - 1)->currentMove);
+    mt.distSelf = Pos::distance(move, (ss - 2)->currentMove);
+    mt.distract = mt.distSelf > (Rule == RENJU ? 5 : 4) && mt.distOppo > 4;
+    return mt;
+}
+
+/// Step 15 of search<Rule,NT>: compute the LMR reduction for the current move.
+/// Also updates ss->statScore. Called after the move has been made on board, so
+/// the node's move/self/oppo must be passed in rather than derived from board.
+template <Rule Rule, NodeType NT>
+Depth computeLmrReduction(Board            &board,
+                          SearchStack      *ss,
+                          const MovePicker &mp,
+                          Pos               move,
+                          Color             self,
+                          Color             oppo,
+                          Depth             depth,
+                          int               moveCount,
+                          int               improvement,
+                          Value             alpha,
+                          Value             beta,
+                          Value             bestValue,
+                          bool              cutNode,
+                          bool              oppo4,
+                          float             complexity,
+                          const MoveTraits &mt)
+{
+    constexpr bool PvNode   = NT == PV || NT == Root;
+    constexpr bool RootNode = NT == Root;
+
+    SearchThread *thisThread = board.thisThread();
+    ABSearchData *searchData = thisThread->searchDataAs<ABSearchData>();
+    ABSearcher   *searcher   = static_cast<ABSearcher *>(thisThread->engine.searcher());
+
+    Depth r = reduction<Rule, PvNode>(searcher->reductions,
+                                      depth,
+                                      moveCount,
+                                      improvement,
+                                      beta - alpha,
+                                      searchData->rootDelta);
+
+    // Policy based reduction (~59 elo)
+    if (mp.hasPolicyScore())
+        r += policyReduction<Rule>(mp.curMoveScore()
+                                   * (0.1f / Evaluation::PolicyBuffer::ScoreScale));
+
+    // Dynamic reduction based on complexity (~2 elo)
+    r += complexity * complexityReduction<Rule>(mt.trivial, mt.important, mt.distract);
+
+    // Decrease reduction if position is or has been on the PV (~10 elo)
+    if (ss->ttPv)
+        r -= TTPV_NEG_REDUCTION;
+
+    // Increase reduction for nodes that does not improve root alpha (~0 elo)
+    if (!RootNode && (ss->ply & 1) && bestValue >= -searchData->rootAlpha)
+        r += NO_ALPHA_IMPROVING_REDUCTION;
+
+    // Increase reduction for cut nodes if is not killer moves (~5 elo)
+    if (cutNode && !(!oppo4 && ss->isKiller(move) && ss->moveP4[self] < H_FLEX3))
+        r += NOKILLER_CUTNODE_REDUCTION;
+
+    // Increase reduction for useless defend move (~6 elo)
+    if (oppo4 && ss->moveP4[oppo] < E_BLOCK4) {
+        r += (mt.distOppo > 4 ? OPPO_USELESS_DEFEND_REDUCTION : 0);
+        r += (mt.distSelf > 4 ? SELF_USELESS_DEFEND_REDUCTION : 0);
+    }
+
+    // Decrease reduction for continuous attack (~5 elo)
+    if (!oppo4 && (ss - 2)->moveP4[self] >= H_FLEX3
+        && (ss->moveP4[self] >= H_FLEX3 || mt.distSelf <= 4 && ss->moveP4[self] >= J_FLEX2_2X))
+        r -= CONTINUOUS_ATTACK_EXT;
+
+    if constexpr (Rule == Rule::RENJU) {
+        // Decrease reduction for false forbidden move in Renju (~6 elo)
+        if (ss->moveP4[BLACK] == FORBID)
+            r -= FALSE_FORBID_LESS_REDUCTION;
+    }
+
+    // Update statScore of this node
+    ss->statScore = statScore(searchData->mainHistory, self, move);
+
+    // Decrease/increase reduction for moves with a good/bad history (~9 elo)
+    r -= extensionFromStatScore(ss->statScore, depth);
+
+    return r;
+}
+
+/// Root part of step 18 of search<Rule,NT>: update the RootMove entry for the
+/// searched move, counting bestmove changes and non-mated root moves.
+/// @return The (possibly balance-adjusted) value used for best-move comparison.
+Value updateRootMove(Board       &board,
+                     SearchStack *ss,
+                     Pos          move,
+                     Value        value,
+                     Value        alpha,
+                     int          moveCount,
+                     uint64_t     curNumNodes,
+                     int         &nonMatedCount)
+{
+    SearchThread  *thisThread = board.thisThread();
+    ABSearchData  *searchData = thisThread->searchDataAs<ABSearchData>();
+    SearchOptions &options    = thisThread->options();
+
+    const bool balance2  = options.balanceMode == SearchOptions::BALANCE_TWO;
+    Value      moveValue = value;
+    RootMove  &rm =
+        balance2 ? thisThread->rootMoves
+                       [thisThread->balance2Moves[Balance2Move {board.getLastMove(), move}]]
+                 : *std::find(thisThread->rootMoves.begin(), thisThread->rootMoves.end(), move);
+
+    // If we are in balance move mode, map the original move value to its negetive
+    // absolute value, which makes best move and PV selection based on how balanced
+    // a move is rather than how good a move is. Note that move value recorded in
+    // RootMove is kept unchanged for better eval output.
+    if (options.balanceMode)
+        value = balancedValue(value, options.balanceBias);
+
+    // Check for PV move or new best move.
+    rm.numNodes += thisThread->numNodes.load(std::memory_order_relaxed) - curNumNodes;
+    rm.selDepth = thisThread->selDepth;
+    if (moveCount == 1 || value > alpha) {
+        rm.value = moveValue;
+        rm.pv.resize(1 + balance2);
+
+        assert((ss + 1)->pv);
+
+        for (Pos *m = (ss + 1)->pv; *m != Pos::NONE; m++)
+            rm.pv.push_back(*m);
+
+        assert(!balance2 || rm.pv.size() >= 2);
+
+        // We record how often the best move has been changed in each iteration.
+        // When the best move changes frequently, we allocate some more time.
+        if (moveCount > 1)
+            searchData->bestMoveChanges++;
+    }
+    else {
+        // All other moves but PV are set to the lowest value: this is not a problem as
+        // the sort is stable and its rank in rootmoves is kept, just the PV is pushed up.
+        rm.value = VALUE_NONE;
+    }
+
+    // We record how many moves is not mated at root, which can indicate singular root.
+    if (value > VALUE_MATED_IN_MAX_PLY)
+        nonMatedCount++;
+
+    return value;
+}
+
 /// The main search function for both PV and non-PV nodes
 template <Rule Rule, NodeType NT>
 Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth, bool cutNode)
@@ -653,7 +1024,7 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
         // Step 2. Check for aborted search and immediate draw
         // Check if we reach the time limit
         if (thisThread->isMainThread())
-            static_cast<MainSearchThread *>(thisThread)->checkExit();
+            thisThread->engine.ctx.checkExit();
 
         // Check if the board has been filled or we have reached the max game ply.
         if (board.movesLeft() == 0 || board.nonPassMoveCount() >= options.maxMoves)
@@ -716,81 +1087,9 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
     }
 
     // Step 5. Database query
-    Database::DBRecord dbRecord;
-    bool               dbHit = false, dbCheckChild = false;
-    Bound              dbLabelBound = BOUND_NONE, dbBound = BOUND_NONE;
-    Value              dbValue;
-    if (thisThread->dbClient) {
-        Database::DBClient &dbClient          = *thisThread->dbClient;
-        int                 queryPlyIncrement = searchData->rootDepth
-                                / (PvNode ? Config::DatabaseQueryPVIterPerPlyIncrement
-                                          : Config::DatabaseQueryNonPVIterPerPlyIncrement);
-        int queryPly = Config::DatabaseQueryPly + queryPlyIncrement;
-
-        if (!skipMove               // Skip query in singular extension
-            && ss->ply <= queryPly  // Only query in the first plies to avoid large speed loss
-            && dbClient.query(board, Rule, dbRecord)) {
-            dbHit        = true;
-            dbValue      = storedValueToSearchValue(dbRecord.value, ss->ply);
-            dbBound      = dbRecord.bound();
-            dbCheckChild = ss->ply < queryPly;
-
-            switch (dbRecord.label) {
-            case Database::LABEL_NULL: break;
-            case Database::LABEL_BLOCKMOVE:  // Block this move
-                return -VALUE_BLOCKED;
-            case Database::LABEL_WIN:  // Win for opponent, loss for self
-                dbValue = std::min(dbValue, VALUE_MATED_FROM_DATABASE);
-                if (dbBound != BOUND_EXACT)
-                    dbBound = BOUND_UPPER;
-                dbLabelBound = BOUND_UPPER;
-                goto try_database_cut;
-            case Database::LABEL_LOSE:  // Loss for opponent, win for self
-                dbValue = std::max(dbValue, VALUE_MATE_FROM_DATABASE);
-                if (dbBound != BOUND_EXACT)
-                    dbBound = BOUND_LOWER;
-                dbLabelBound = BOUND_LOWER;
-                goto try_database_cut;
-            case Database::LABEL_DRAW:  // Draw for both side
-                dbValue      = getDrawValue(board, options, ss->ply);
-                dbBound      = BOUND_EXACT;
-                dbLabelBound = BOUND_EXACT;
-                goto try_database_cut;
-            default:  // Read depth, bound, value
-                goto try_database_cut;
-
-            try_database_cut:
-                if (RootNode)
-                    break;
-
-                int  dbDepth = dbRecord.depth() + Config::DatabaseQueryResultDepthBoundBias;
-                bool dbCut =
-                    dbDepth > depth
-                    && (dbValue >= beta ? (dbBound & BOUND_LOWER) : (dbBound & BOUND_UPPER));
-                if (!PvNode && dbCut
-                    || dbLabelBound == BOUND_LOWER && dbValue >= beta   // Win-score-cut
-                    || dbLabelBound == BOUND_UPPER && dbValue <= alpha  // Loss-score-cut
-                    || dbLabelBound == BOUND_EXACT                      // Draw-score-cut
-                ) {
-                    TT.store(posKey,
-                             dbValue,
-                             ss->staticEval,
-                             ss->ttPv,
-                             dbBound,
-                             Pos::NONE,
-                             dbLabelBound == BOUND_EXACT
-                                 ? (int)DEPTH_UPPER_BOUND
-                                 : std::min(dbDepth, (int)DEPTH_UPPER_BOUND),
-                             ss->ply);
-                    return dbValue;
-                }
-
-                // Expand search window for database cut in PvNode
-                if (PvNode && (dbCut || dbLabelBound != BOUND_NONE))
-                    alpha = -VALUE_INFINITE, beta = VALUE_INFINITE;
-            }
-        }
-    }
+    DBProbeState db;
+    if (auto dbCutValue = probeDatabaseAtNode<Rule, NT>(board, ss, alpha, beta, depth, posKey, db))
+        return *dbCutValue;
 
     // Step 6. Static evaluation
     Value eval        = VALUE_NONE;
@@ -809,32 +1108,16 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
             goto moves_loop;
     }
     else if (!RootNode) {
-        if (ttHit) {
-            // Never assume anything about values stored in TT
-            ss->staticEval = eval = ttEval;
-            if (eval == VALUE_NONE)
-                ss->staticEval = eval = Evaluation::evaluate<Rule>(board, alpha, beta);
-
-            // Try to use ttValue as a better eval estimation
-            if (ttValue != VALUE_NONE && (ttBound & (ttValue > eval ? BOUND_LOWER : BOUND_UPPER)))
-                eval = ttValue;
-        }
-        else {
-            ss->staticEval = eval = Evaluation::evaluate<Rule>(board, alpha, beta);
-
-            // Save static evaluation into transposition table
-            if (!skipMove)
-                TT.store(posKey,
-                         VALUE_NONE,
-                         ss->staticEval,
-                         ss->ttPv,
-                         BOUND_NONE,
-                         Pos::NONE,
-                         (int)DEPTH_NONE,
-                         ss->ply);
-        }
-
-        improvement = ss->staticEval - (ss - 2)->staticEval;
+        std::tie(eval, improvement) = computeStaticEval<Rule>(board,
+                                                              ss,
+                                                              alpha,
+                                                              beta,
+                                                              posKey,
+                                                              skipMove,
+                                                              ttHit,
+                                                              ttValue,
+                                                              ttEval,
+                                                              ttBound);
     }
 
     // Step 7. Razoring with VCF (~68 elo)
@@ -910,18 +1193,12 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
 
     // When opponent is doing A_FIVE attack, search starts from here
 moves_loop:
-    ABSearcher  *searcher    = static_cast<ABSearcher *>(thisThread->threads.searcher());
-    TimeControl &timectl     = searcher->timectl;
-    uint64_t     curNumNodes = 0;
-    ss->dbChildWritten       = false;
+    SearchContext &ctx         = thisThread->engine.ctx;
+    uint64_t       curNumNodes = 0;
+    ss->dbChildWritten         = false;
 
     // Calculate a complexity metric for current position
-    uint16_t complexCount = 1;
-    for (int pat4 = L_FLEX2; pat4 <= D_BLOCK4_PLUS; pat4++) {
-        complexCount += board.p4Count(self, (Pattern4)pat4);
-        complexCount += board.p4Count(oppo, (Pattern4)pat4);
-    }
-    float complexity = ::logf(complexCount);
+    float complexity = positionComplexity(board, self, oppo);
 
     // Fail-High reduction (~50 elo)
     // Indicate cutNode that will probably fail high if current eval is far above beta
@@ -975,36 +1252,29 @@ moves_loop:
         }
 
         if (RootNode && thisThread->isMainThread())
-            searcher->printer.printEnteringMove(*static_cast<MainSearchThread *>(thisThread),
-                                                timectl,
-                                                searchData->pvIdx,
-                                                searchData->rootDepth,
-                                                move);
+            ctx.printer.printEnteringMove(*thisThread,
+                                          ctx.timectl,
+                                          searchData->pvIdx,
+                                          searchData->rootDepth,
+                                          move);
 
         // Initialize heruistic information
         ss->moveCount     = ++moveCount;
         ss->moveP4[BLACK] = board.cell(move).pattern4[BLACK];
         ss->moveP4[WHITE] = board.cell(move).pattern4[WHITE];
 
-        // False forbidden move in Renju is considered as important move
-        bool importantMove = ss->moveP4[self] >= J_FLEX2_2X || ss->moveP4[oppo] >= H_FLEX3
-                             || (Rule == Rule::RENJU && ss->moveP4[BLACK] == FORBID);
-        bool trivialMove = ss->moveP4[BLACK] == NONE && ss->moveP4[WHITE] == NONE;
-
-        int  distOppo = Pos::distance(move, (ss - 1)->currentMove);
-        int  distSelf = Pos::distance(move, (ss - 2)->currentMove);
-        bool distract = distSelf > (Rule == RENJU ? 5 : 4) && distOppo > 4;
+        const MoveTraits mt = classifyMove<Rule>(ss, move, self, oppo);
 
         // Step 12. Pruning at shallow depth
         // Do pruning only when we have non-losing moves, otherwise we may have a false mate.
         // Also skip pruning if there might be a child database record we want to read.
-        if (!RootNode && !dbCheckChild && bestValue > VALUE_MATED_IN_MAX_PLY) {
+        if (!RootNode && !db.checkChild && bestValue > VALUE_MATED_IN_MAX_PLY) {
             // Move count pruning: skip move if movecount is above threshold (~107 elo)
             if (moveCount >= futilityMoveCount(depth, improvement > 0))
                 continue;
 
             // Skip trivial moves at lower depth (~2 elo at LTC)
-            if (trivialMove && depth < TRIVIAL_PRUN_DEPTH)
+            if (mt.trivial && depth < TRIVIAL_PRUN_DEPTH)
                 continue;
 
             // Policy based pruning (~10 elo)
@@ -1012,7 +1282,7 @@ moves_loop:
                 continue;
 
             // Prun distract defence move which is likely to delay a winning (~2 elo)
-            if (oppo4 && depth < TRIVIAL_PRUN_DEPTH && ss->moveP4[oppo] < E_BLOCK4 && distract)
+            if (oppo4 && depth < TRIVIAL_PRUN_DEPTH && ss->moveP4[oppo] < E_BLOCK4 && mt.distract)
                 continue;
         }
 
@@ -1035,9 +1305,6 @@ moves_loop:
             Value singularBeta =
                 std::max(ttValue - singularMargin<Rule>(depth, formerPv), -VALUE_MATE);
 
-            // Backup current P4
-            // Pattern4 moveP4Backup[SIDE_NB] = {ss->moveP4[BLACK], ss->moveP4[WHITE]};
-
             // Exclude ttMove from the reduced depth search to see the value of second best move
             ss->skipMove = move;
             value        = search<Rule, NonPV>(board,
@@ -1047,10 +1314,6 @@ moves_loop:
                                         depth - singularReduction(depth, formerPv),
                                         cutNode);
             ss->skipMove = Pos::NONE;
-
-            // Restore current P4
-            // ss->moveP4[BLACK] = moveP4Backup[BLACK];
-            // ss->moveP4[WHITE] = moveP4Backup[WHITE];
 
             // Extend if only the ttMove fails high, while other moves fails low.
             if (value < singularBeta) {
@@ -1075,8 +1338,8 @@ moves_loop:
             extension = PvNode ? TTM_EXT_PV : TTM_EXT_NONPV;
 
             // Additional extension for near B4 ttmove
-            if (ss->moveP4[self] >= E_BLOCK4 && distSelf <= 6)
-                extension += (distSelf <= 4 ? NEARB4_EXT_DIST4 : NEARB4_EXT_DIST6);
+            if (ss->moveP4[self] >= E_BLOCK4 && mt.distSelf <= 6)
+                extension += (mt.distSelf <= 4 ? NEARB4_EXT_DIST4 : NEARB4_EXT_DIST6);
         }
 
         // Fail high reduction (~8 elo)
@@ -1102,55 +1365,22 @@ moves_loop:
         // Step 15. Late move reduction (LMR). Moves are searched with a reduced
         // depth and will be re-searched at full depth if fail high.
         if (depth >= 2 && moveCount > 1 + RootNode) {
-            Depth r = reduction<Rule, PvNode>(searcher->reductions,
-                                              depth,
-                                              moveCount,
-                                              improvement,
-                                              beta - alpha,
-                                              searchData->rootDelta);
-
-            // Policy based reduction (~59 elo)
-            if (mp.hasPolicyScore())
-                r += policyReduction<Rule>(mp.curMoveScore()
-                                           * (0.1f / Evaluation::PolicyBuffer::ScoreScale));
-
-            // Dynamic reduction based on complexity (~2 elo)
-            r += complexity * complexityReduction<Rule>(trivialMove, importantMove, distract);
-
-            // Decrease reduction if position is or has been on the PV (~10 elo)
-            if (ss->ttPv)
-                r -= TTPV_NEG_REDUCTION;
-
-            // Increase reduction for nodes that does not improve root alpha (~0 elo)
-            if (!RootNode && (ss->ply & 1) && bestValue >= -searchData->rootAlpha)
-                r += NO_ALPHA_IMPROVING_REDUCTION;
-
-            // Increase reduction for cut nodes if is not killer moves (~5 elo)
-            if (cutNode && !(!oppo4 && ss->isKiller(move) && ss->moveP4[self] < H_FLEX3))
-                r += NOKILLER_CUTNODE_REDUCTION;
-
-            // Increase reduction for useless defend move (~6 elo)
-            if (oppo4 && ss->moveP4[oppo] < E_BLOCK4) {
-                r += (distOppo > 4 ? OPPO_USELESS_DEFEND_REDUCTION : 0);
-                r += (distSelf > 4 ? SELF_USELESS_DEFEND_REDUCTION : 0);
-            }
-
-            // Decrease reduction for continuous attack (~5 elo)
-            if (!oppo4 && (ss - 2)->moveP4[self] >= H_FLEX3
-                && (ss->moveP4[self] >= H_FLEX3 || distSelf <= 4 && ss->moveP4[self] >= J_FLEX2_2X))
-                r -= CONTINUOUS_ATTACK_EXT;
-
-            if constexpr (Rule == Rule::RENJU) {
-                // Decrease reduction for false forbidden move in Renju (~6 elo)
-                if (ss->moveP4[BLACK] == FORBID)
-                    r -= FALSE_FORBID_LESS_REDUCTION;
-            }
-
-            // Update statScore of this node
-            ss->statScore = statScore(searchData->mainHistory, self, move);
-
-            // Decrease/increase reduction for moves with a good/bad history (~9 elo)
-            r -= extensionFromStatScore(ss->statScore, depth);
+            Depth r = computeLmrReduction<Rule, NT>(board,
+                                                    ss,
+                                                    mp,
+                                                    move,
+                                                    self,
+                                                    oppo,
+                                                    depth,
+                                                    moveCount,
+                                                    improvement,
+                                                    alpha,
+                                                    beta,
+                                                    bestValue,
+                                                    cutNode,
+                                                    oppo4,
+                                                    complexity,
+                                                    mt);
 
             // Allow LMR to do deeper search in some circumstances
             // Clamp the LMR depth to newDepth (no depth less than one)
@@ -1206,23 +1436,23 @@ moves_loop:
         board.undo<Rule>();
 
         if (RootNode && thisThread->isMainThread())
-            searcher->printer.printLeavingMove(*static_cast<MainSearchThread *>(thisThread),
-                                               timectl,
-                                               searchData->pvIdx,
-                                               searchData->rootDepth,
-                                               move);
+            ctx.printer.printLeavingMove(*thisThread,
+                                         ctx.timectl,
+                                         searchData->pvIdx,
+                                         searchData->rootDepth,
+                                         move);
 
         // Step 18. Check for a new best move
         // Finished searching the move. If a stop occurred, the return value of the search cannot
         // be trusted, so we return immediately without updating best move, PV and TT.
-        if (thisThread->threads.isTerminating()) {
+        if (thisThread->engine.isTerminating()) {
             if (thisThread->dbClient
-                && !dbHit  // Write when no dbHit, we never overwrite any existing record with null
-                && !Config::DatabaseReadonlyMode  // Never write in database readonly mode
+                && !db.hit  // Write when no dbHit, we never overwrite any existing record with null
+                && !ctx.dbParams.readonlyMode  // Never write in database readonly mode
                 && ss->dbChildWritten  // Write anyway if we have children that have already written
             ) {
                 Database::DBRecord newRecord {Database::LABEL_NULL, 0, 0};
-                thisThread->dbClient->save(board, Rule, newRecord, Config::DatabaseOverwriteRule);
+                thisThread->dbClient->save(board, Rule, newRecord, ctx.dbParams.overwriteRule);
                 (ss - 1)->dbChildWritten = true;
             }
             return VALUE_NONE;
@@ -1233,51 +1463,8 @@ moves_loop:
 
         assert(value > -VALUE_INFINITE && value < VALUE_INFINITE);
 
-        if (RootNode) {
-            const bool balance2  = options.balanceMode == SearchOptions::BALANCE_TWO;
-            Value      moveValue = value;
-            RootMove  &rm =
-                balance2
-                     ? thisThread->rootMoves
-                          [thisThread->balance2Moves[Balance2Move {board.getLastMove(), move}]]
-                     : *std::find(thisThread->rootMoves.begin(), thisThread->rootMoves.end(), move);
-
-            // If we are in balance move mode, map the original move value to its negetive
-            // absolute value, which makes best move and PV selection based on how balanced
-            // a move is rather than how good a move is. Note that move value recorded in
-            // RootMove is kept unchanged for better eval output.
-            if (options.balanceMode)
-                value = balancedValue(value, options.balanceBias);
-
-            // Check for PV move or new best move.
-            rm.numNodes += thisThread->numNodes.load(std::memory_order_relaxed) - curNumNodes;
-            rm.selDepth = thisThread->selDepth;
-            if (moveCount == 1 || value > alpha) {
-                rm.value = moveValue;
-                rm.pv.resize(1 + balance2);
-
-                assert((ss + 1)->pv);
-
-                for (Pos *m = (ss + 1)->pv; *m != Pos::NONE; m++)
-                    rm.pv.push_back(*m);
-
-                assert(!balance2 || rm.pv.size() >= 2);
-
-                // We record how often the best move has been changed in each iteration.
-                // When the best move changes frequently, we allocate some more time.
-                if (moveCount > 1)
-                    searchData->bestMoveChanges++;
-            }
-            else {
-                // All other moves but PV are set to the lowest value: this is not a problem as
-                // the sort is stable and its rank in rootmoves is kept, just the PV is pushed up.
-                rm.value = VALUE_NONE;
-            }
-
-            // We record how many moves is not mated at root, which can indicate singular root.
-            if (value > VALUE_MATED_IN_MAX_PLY)
-                nonMatedCount++;
-        }
+        if (RootNode)
+            value = updateRootMove(board, ss, move, value, alpha, moveCount, curNumNodes, nonMatedCount);
 
         // Update best value, best move and PV.
         if (value > bestValue) {
@@ -1320,14 +1507,14 @@ moves_loop:
         }
 
         if (RootNode && thisThread->isMainThread())
-            searcher->printer.printMoveResult(*static_cast<MainSearchThread *>(thisThread),
-                                              timectl,
-                                              searchData->pvIdx,
-                                              searchData->multiPv,
-                                              searchData->rootDepth,
-                                              move,
-                                              value,
-                                              bestMove == move);
+            ctx.printer.printMoveResult(*thisThread,
+                                        ctx.timectl,
+                                        searchData->pvIdx,
+                                        searchData->multiPv,
+                                        searchData->rootDepth,
+                                        move,
+                                        value,
+                                        bestMove == move);
 
         // Record good moves that improved alpha bound for move heuristic.
         histTracker.addSearchedMove(move, bestMove);
@@ -1364,91 +1551,21 @@ moves_loop:
 
     // Step 20. Update database record
     Bound bound = bestValue >= beta ? BOUND_LOWER : PvNode && bestMove ? BOUND_EXACT : BOUND_UPPER;
-    if (thisThread->dbClient
-        && !Config::DatabaseReadonlyMode      // Never write in database readonly mode
-        && !options.balanceMode               // Never write when we are doing balanced search
-        && (!skipMove || ss->dbChildWritten)  // Never write when in singular extension
-        && ss->numNullMoves == 0              // Never write when in null move search
-        && !(RootNode && (searchData->pvIdx || options.blockMoves.size()))) {
-        bool exact  = PvNode && bound == BOUND_EXACT;
-        bool isWin  = bestValue > VALUE_MATE_IN_MAX_PLY && (bound & BOUND_LOWER);
-        bool isLoss = bestValue < VALUE_MATED_IN_MAX_PLY && (bound & BOUND_UPPER);
-
-        int writePly, writeDepth;
-        if (isWin || isLoss) {
-            if (ss->ply <= Config::DatabaseMateWritePly
-                && mate_step(bestValue, ss->ply) >= Config::DatabaseMateWriteMinStep) {
-                writePly   = Config::DatabaseMateWritePly;
-                writeDepth = exact ? Config::DatabaseMateWriteMinDepthExact
-                                   : Config::DatabaseMateWriteMinDepthNonExact;
-            }
-            else
-                writePly = -1, writeDepth = MAX_DEPTH;
-        }
-        else {
-            writePly   = exact ? Config::DatabasePVWritePly : Config::DatabaseNonPVWritePly;
-            writeDepth = exact ? (std::abs(bestValue) <= Config::DatabaseWriteValueRange
-                                      ? Config::DatabasePVWriteMinDepth
-                                      : MAX_DEPTH)
-                         : bound == BOUND_UPPER ? (bestValue <= Config::DatabaseWriteValueRange
-                                                       ? Config::DatabaseNonPVWriteMinDepth
-                                                       : MAX_DEPTH)
-                                                : (-bestValue >= Config::DatabaseWriteValueRange
-                                                       ? Config::DatabaseNonPVWriteMinDepth
-                                                       : MAX_DEPTH);
-        }
-
-        if (RootNode
-            || ss->dbChildWritten  // Write anyway if we have children that have already written
-            || PvNode && ss->ply <= 1 + isLoss
-                   && options.multiPV > 1   // Always add new record in multipv
-            || ss->ply <= writePly - isWin  // Loss label are recorded one ply less
-                   && (dbHit || depth >= writeDepth + isWin)
-            || dbHit && (isWin || isLoss)  // Always try overwrite existing record with W/L record
-            || PvNode && dbHit             // Try overwrite existing winrate with newer winrate
-                   && ss->ply <= (exact ? Config::DatabaseExactOverwritePly
-                                        : Config::DatabaseNonExactOverwritePly)) {
-            // Assume we have already read record from the database
-            Database::DBRecord newRecord;
-
-            // Assign determined label if we have a sure win/loss
-            // Do not inherit determined label from queried record,
-            // only write determined label when we have searched it.
-            newRecord.label = isWin    ? Database::LABEL_LOSE  // Loss for opponent
-                              : isLoss ? Database::LABEL_WIN   // Win for opponent
-                              : dbHit && !Database::isDeterminedLabel(dbRecord.label)
-                                  ? dbRecord.label
-                                  : Database::LABEL_NONE;
-            newRecord.value = searchValueToStoredValue(bestValue, ss->ply);
-            newRecord.setDepthBound((int)depth, bound);
-
-            // Write if there is no db hit, or the new record satisfy the overwrite rule
-            if (!dbHit
-                || Database::checkOverwrite(dbRecord, newRecord, Config::DatabaseOverwriteRule)) {
-                thisThread->dbClient->save(board,
-                                           Rule,
-                                           newRecord,
-                                           dbHit ? Database::OverwriteRule::Always
-                                                 : Config::DatabaseOverwriteRule);
-                if (Config::DatabaseMandatoryParentWrite)
-                    (ss - 1)->dbChildWritten = true;
-            }
-        }
-    }
+    writeDatabaseRecord<Rule, NT>(board, ss, depth, bestValue, bound, db);
 
     // Adjust best value with Win/Loss record from database in PV node
-    if (!RootNode && PvNode && dbHit) {
-        if (dbLabelBound == BOUND_LOWER)
-            bestValue = std::max(bestValue, dbValue);
-        else if (dbLabelBound == BOUND_UPPER)
-            bestValue = std::min(bestValue, dbValue);
-        else if (int dbDepth = dbRecord.depth() + Config::DatabaseQueryResultDepthBoundBias;
-                 (dbBound == BOUND_EXACT                          // Exact-cut
-                  || dbBound == BOUND_LOWER && dbValue >= beta    // Beta-cut
-                  || dbBound == BOUND_UPPER && dbValue <= alpha)  // Alpha-cut
+    if (!RootNode && PvNode && db.hit) {
+        if (db.labelBound == BOUND_LOWER)
+            bestValue = std::max(bestValue, db.value);
+        else if (db.labelBound == BOUND_UPPER)
+            bestValue = std::min(bestValue, db.value);
+        else if (int dbDepth = db.record.depth() + ctx.dbParams.queryResultDepthBoundBias;
+                 (db.bound == BOUND_EXACT                           // Exact-cut
+                  || db.bound == BOUND_LOWER && db.value >= beta    // Beta-cut
+                  || db.bound == BOUND_UPPER && db.value <= alpha)  // Alpha-cut
                  && dbDepth > std::max((int)std::ceil(depth), ss->dbValueDepth)
-                 && dbValue > bestValue - (dbDepth - (int)std::ceil(depth)) * 10)
-            bestValue = dbValue, bound = dbBound, ss->dbValueDepth = dbDepth;
+                 && db.value > bestValue - (dbDepth - (int)std::ceil(depth)) * 10)
+            bestValue = db.value, bound = db.bound, ss->dbValueDepth = dbDepth;
     }
 
     // Step 21. Save TT entry for this position
@@ -1501,7 +1618,7 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     // Step 2. Check for immediate draw and winning
     // Check if we reach the time limit
     if (thisThread->isMainThread())
-        static_cast<MainSearchThread *>(thisThread)->checkExit();
+        thisThread->engine.ctx.checkExit();
 
     // Check if the board has been filled or we have reached the max game ply.
     if (board.movesLeft() == 0 || board.nonPassMoveCount() >= thisThread->options().maxMoves)
@@ -1628,7 +1745,7 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
         board.undo<Rule>();
 
         // Check if a stop occurred, we discard search result by returning none value
-        if (thisThread->threads.isTerminating())
+        if (thisThread->engine.isTerminating())
             return VALUE_NONE;
 
         // Step 9. Check for a new best move
@@ -1733,7 +1850,7 @@ Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     }
 
     assert(value > -VALUE_INFINITE && value < VALUE_INFINITE
-           || thisThread->threads.isTerminating());
+           || thisThread->engine.isTerminating());
     return value;
 }
 

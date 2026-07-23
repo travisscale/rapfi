@@ -141,6 +141,11 @@ float Node::getQVar(float priorVar, float priorWeight) const
 
 void Node::updateStats()
 {
+    // Concurrency note: child visit counts and values are read with relaxed
+    // atomics while other threads may be updating them. The aggregation is
+    // statistically tolerant by design - a slightly stale or torn-across-
+    // children snapshot only perturbs this node's running averages, which the
+    // next updateStats() call recomputes from scratch.
     const EdgeArray *edgeArray = getEdges();
     // If this node is not expanded, then we do not need to update any stats
     if (!edgeArray)

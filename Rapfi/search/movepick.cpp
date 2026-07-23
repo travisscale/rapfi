@@ -43,6 +43,12 @@ enum Stages {
     ALLMOVES,
 };
 
+/// Append VCF moves using the rule-correct variant of the generator.
+ScoredMove *generateVCFMoves(Rule rule, const Board &board, ScoredMove *moveList)
+{
+    return (rule == RENJU ? generate<VCF | RULE_RENJU> : generate<VCF>)(board, moveList);
+}
+
 /// Partial sort the move list up to the score limit. It dynamiclly decides
 /// which sorting algorithm to use based on how many moves are in the list.
 template <typename Comparator>
@@ -120,7 +126,7 @@ MovePicker::MovePicker(Rule rule, const Board &board, ExtraArgs<MovePicker::ROOT
     }
     else if (board.p4Count(oppo, B_FLEX4)) {
         endMove = generate<DEFEND_FOUR | ALL>(board, curMove);
-        endMove = (rule == RENJU ? generate<VCF | RULE_RENJU> : generate<VCF>)(board, endMove);
+        endMove = generateVCFMoves(rule, board, endMove);
         if (useNormalizedPolicy)
             scoreAllMoves<ScoreType(BALANCED | POLICY)>();
     }
@@ -136,7 +142,7 @@ MovePicker::MovePicker(Rule rule, const Board &board, ExtraArgs<MovePicker::ROOT
         if (endMove == curMove)
             endMove = generate<ALL>(board, curMove);
         else
-            endMove = (rule == RENJU ? generate<VCF | RULE_RENJU> : generate<VCF>)(board, endMove);
+            endMove = generateVCFMoves(rule, board, endMove);
 
         if (useNormalizedPolicy)
             scoreAllMoves<ScoreType(BALANCED | POLICY)>();
@@ -244,8 +250,6 @@ Pos MovePicker::pickNextMove(Pred filter)
             curScore = curMove->score;
             if (useNormalizedPolicy)
                 curPolicy = curMove->policy;
-            else
-                curPolicyScore = curMove->rawScore;
             return *curMove++;
         }
 
@@ -280,7 +284,6 @@ void MovePicker::scoreAllMoves()
         maxPolicyScore = std::numeric_limits<Score>::lowest() / 2;
     }
 
-    maxScore = std::numeric_limits<Score>::lowest() / 2;
     for (auto &m : *this) {
         const Cell &c = board.cell(m);
 
@@ -314,8 +317,6 @@ void MovePicker::scoreAllMoves()
                     m.score += CounterMoveBonus;
             }
         }
-
-        maxScore = std::max(maxScore, m.score);
     }
 
     // Compute normalized policy score if needed
@@ -391,7 +392,7 @@ top:
 
         curMove = moves;
         endMove = generate<DEFEND_FOUR>(board, curMove);
-        endMove = (rule == RENJU ? generate<VCF | RULE_RENJU> : generate<VCF>)(board, endMove);
+        endMove = generateVCFMoves(rule, board, endMove);
 
         if (useNormalizedPolicy) {
             scoreAllMoves<ScoreType(BALANCED | POLICY)>();
@@ -421,7 +422,7 @@ top:
             goto top;
         }
 
-        endMove = (rule == RENJU ? generate<VCF | RULE_RENJU> : generate<VCF>)(board, endMove);
+        endMove = generateVCFMoves(rule, board, endMove);
 
         if (useNormalizedPolicy) {
             scoreAllMoves<ScoreType(BALANCED | POLICY)>();

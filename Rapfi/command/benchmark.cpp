@@ -75,8 +75,8 @@ EngineState saveEngineStateForBenckmark()
 {
     EngineState state;
 
-    state.threadNum                     = Search::Threads.size();
-    state.memoryLimitKB                 = Search::Threads.searcher()->getMemoryLimit();
+    state.threadNum                     = Search::Engine.size();
+    state.memoryLimitKB                 = Search::Engine.searcher()->getMemoryLimit();
     state.aspirationWindow              = Config::AspirationWindow;
     state.numIterationAfterSingularRoot = Config::NumIterationAfterSingularRoot;
     state.numIterationAfterMate         = Config::NumIterationAfterMate;
@@ -87,8 +87,8 @@ EngineState saveEngineStateForBenckmark()
 
 void recoverEngineState(EngineState state)
 {
-    Search::Threads.setNumThreads(state.threadNum);
-    Search::Threads.searcher()->setMemoryLimit(state.memoryLimitKB);
+    Search::Engine.setNumThreads(state.threadNum);
+    Search::Engine.searcher()->setMemoryLimit(state.memoryLimitKB);
     Config::MessageMode                   = state.messageMode;
     Config::AspirationWindow              = state.aspirationWindow;
     Config::NumIterationAfterSingularRoot = state.numIterationAfterSingularRoot;
@@ -134,8 +134,8 @@ void Command::benchmark()
     Config::AspirationWindow              = true;
     Config::NumIterationAfterSingularRoot = 0;
     Config::NumIterationAfterMate         = 0;
-    Search::Threads.setNumThreads(1);
-    Search::Threads.searcher()->setMemoryLimit(TTSizeMB * 1024);
+    Search::Engine.setNumThreads(1);
+    Search::Engine.searcher()->setMemoryLimit(TTSizeMB * 1024);
     Search::SearchOptions options;
     options.infoMode            = Search::SearchOptions::INFO_NONE;
     options.disableOpeningQuery = true;
@@ -155,22 +155,22 @@ void Command::benchmark()
 
         options.rule     = {benchEntry.rule, GameRule::FREEOPEN};
         options.maxDepth = benchEntry.searchDepth;
-        Search::Threads.clear(true);
+        Search::Engine.clear(true);
 
         Time startTime = now();
-        Search::Threads.startThinking(*board, options, true);
-        Search::Threads.waitForIdle();
+        Search::Engine.startThinking(*board, options, true);
+        Search::Engine.waitForIdle();
         Time endTime = now();
 
         duration += endTime - startTime;
 
-        size_t nodes = Search::Threads.nodesSearched();
+        size_t nodes = Search::Engine.nodesSearched();
         searchNodes += nodes;
 
         // Hash from nodes searched
         hasher << nodes;
         // Hash from the last output eval
-        hasher << Search::Threads.main()->rootMoves[0].value;
+        hasher << Search::Engine.main()->rootMoves[0].value;
     }
 
     uint32_t hash32 = (uint64_t(hasher) >> 32) ^ uint64_t(hasher);

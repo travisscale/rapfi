@@ -109,8 +109,8 @@ void sendActionAndUpdateBoard(ActionType action, Pos bestMove)
         std::cout << CoordText {bestMove, board->size(), Config::IOCoordMode} << std::endl;
     }
     else if (action == ActionType::Move2) {
-        Pos move1 = Search::Threads.main()->rootMoves[0].pv[0];
-        Pos move2 = Search::Threads.main()->rootMoves[0].pv[1];
+        Pos move1 = Search::Engine.main()->rootMoves[0].pv[0];
+        Pos move2 = Search::Engine.main()->rootMoves[0].pv[1];
         board->move(options.rule, move1);
         board->move(options.rule, move2);
         std::cout << CoordText {move1, board->size(), Config::IOCoordMode} << ' '
@@ -120,14 +120,14 @@ void sendActionAndUpdateBoard(ActionType action, Pos bestMove)
         std::cout << "SWAP" << std::endl;
     }
     else if (action == ActionType::Swap2PutTwo) {
-        if (Search::Threads.isTerminating())
+        if (Search::Engine.isTerminating())
             return;
 
         options.swapable    = false;
         options.balanceMode = Search::SearchOptions::BALANCE_TWO;
-        Search::Threads.startThinking(*board, options, false, []() {
-            Pos move1 = Search::Threads.main()->rootMoves[0].pv[0];
-            Pos move2 = Search::Threads.main()->rootMoves[0].pv[1];
+        Search::Engine.startThinking(*board, options, false, []() {
+            Pos move1 = Search::Engine.main()->rootMoves[0].pv[0];
+            Pos move2 = Search::Engine.main()->rootMoves[0].pv[1];
             std::cout << CoordText {move1, board->size(), Config::IOCoordMode} << ' '
                       << CoordText {move2, board->size(), Config::IOCoordMode} << std::endl;
         });
@@ -149,20 +149,20 @@ void think(Board                             &board,
         loadConfig();
 
     // If threads are pondering, stop them now and wait for them to finish
-    if (Search::Threads.main()->inPonder) {
-        Search::Threads.stopThinking();
-        Search::Threads.waitForIdle();
+    if (Search::Engine.ctx.inPonder) {
+        Search::Engine.stopThinking();
+        Search::Engine.waitForIdle();
     }
 
     thinking = true;
-    Search::Threads.startThinking(board, options, false, [&, startTime = now()]() {
+    Search::Engine.startThinking(board, options, false, [&, startTime = now()]() {
         {
 #ifdef MULTI_THREADING
             std::lock_guard<std::mutex> lock(protocolMutex);
 #endif
 
-            sendActionAndUpdateBoard(Search::Threads.main()->resultAction,
-                                     Search::Threads.main()->bestMove);
+            sendActionAndUpdateBoard(Search::Engine.ctx.resultAction,
+                                     Search::Engine.ctx.bestMove);
             thinking = false;
         }
 
@@ -172,8 +172,8 @@ void think(Board                             &board,
             options.timeLeft = std::max(options.timeLeft - usedTime, (Time)0);
 
         // Start pondering search if needed
-        if (Search::Threads.main()->startPonderAfterThinking)
-            Search::Threads.startThinking(board, options, true);
+        if (Search::Engine.ctx.startPonderAfterThinking)
+            Search::Engine.startThinking(board, options, true);
     });
 }
 
@@ -238,7 +238,7 @@ void getOption()
 
         // minimal hash size value is 1 KB
         size_t memLimitKB = maxMemSizeKB <= memReservedKB ? 1 : maxMemSizeKB - memReservedKB;
-        Search::Threads.searcher()->setMemoryLimit(memLimitKB);
+        Search::Engine.searcher()->setMemoryLimit(memLimitKB);
     }
     else if (token == "RULE") {
         std::cin >> val;
@@ -258,17 +258,17 @@ void getOption()
 
         // Resize TT if memory reserved is different for this rule.
         if (Config::MemoryReservedMB[prevRule] != Config::MemoryReservedMB[options.rule.rule]) {
-            size_t maxMemSizeKB = Search::Threads.searcher()->getMemoryLimit()
+            size_t maxMemSizeKB = Search::Engine.searcher()->getMemoryLimit()
                                   + Config::MemoryReservedMB[prevRule] * 1024;
             size_t memReservedKB = Config::MemoryReservedMB[options.rule.rule] * 1024;
             size_t memLimitKB    = maxMemSizeKB <= memReservedKB ? 1 : maxMemSizeKB - memReservedKB;
-            Search::Threads.searcher()->setMemoryLimit(memLimitKB);
+            Search::Engine.searcher()->setMemoryLimit(memLimitKB);
         }
 
         // Clear TT if rule is changed
         if (board && prevRule != options.rule) {
             board->newGame(options.rule);
-            Search::Threads.clear(true);
+            Search::Engine.clear(true);
         }
     }
     else if (token == "GAME_TYPE") {
@@ -331,14 +331,14 @@ void getOption()
                 board->move(options.rule, p);
 
             // Clear TT in case of some mistaken win/loss records
-            Search::Threads.clear(true);
+            Search::Engine.clear(true);
         }
     }
     else if (token == "THREAD_NUM") {
         std::cin >> val;
         val = std::max<int64_t>(val, 1);
-        if (Search::Threads.size() != val) {
-            Search::Threads.setNumThreads(val);
+        if (Search::Engine.size() != val) {
+            Search::Engine.setNumThreads(val);
         }
     }
     else if (token == "THREAD_SPLIT_DEPTH") {
@@ -360,9 +360,9 @@ void getOption()
     else if (token == "USEDATABASE") {
         std::cin >> val;
         if (val == 1)
-            Search::Threads.setupDatabase(Config::createDefaultDBStorage());
+            Search::Engine.setupDatabase(Config::createDefaultDBStorage());
         else
-            Search::Threads.setupDatabase(nullptr);
+            Search::Engine.setupDatabase(nullptr);
     }
     /////////////////////////////////////////////////
     // Other Extension
@@ -387,7 +387,7 @@ void getOption()
             options.maxMoves = val;
 
             // We need to clear TT in case of mistaken results stored
-            Search::Threads.clear(true);
+            Search::Engine.clear(true);
         }
     }
     else if (token == "DRAW_RESULT") {
@@ -404,7 +404,7 @@ void getOption()
 
         if (prevDrawResult != options.drawResult) {
             // We need to clear TT in case of mistaken results stored
-            Search::Threads.clear(true);
+            Search::Engine.clear(true);
         }
     }
     else if (token == "EVALUATOR_DRAW_BLACK_WINRATE") {
@@ -418,8 +418,8 @@ void getOption()
     }
     else if (token == "SEARCH_TYPE") {
         std::cin >> str;
-        Search::Threads.setupSearcher(Config::createSearcher(str));
-        Search::Threads.clear(true);
+        Search::Engine.setupSearcher(Config::createSearcher(str));
+        Search::Engine.clear(true);
     }
     else {
         MESSAGEL("Unknown Info Parameter: " << token);
@@ -428,7 +428,7 @@ void getOption()
 
 void clearHash()
 {
-    Search::Threads.clear(true);
+    Search::Engine.clear(true);
     MESSAGEL("Transposition table cleared.");
 }
 
@@ -480,15 +480,15 @@ void setDatabase()
         Config::DatabaseURL     = databasePath.u8string();
         auto newDatabaseStorage = Config::createDefaultDBStorage();
         if (newDatabaseStorage)
-            Search::Threads.setupDatabase(std::move(newDatabaseStorage));
+            Search::Engine.setupDatabase(std::move(newDatabaseStorage));
     }
 }
 
 void saveDatabase()
 {
-    if (Search::Threads.dbStorage()) {
+    if (Search::Engine.dbStorage()) {
         auto startTime = now();
-        Search::Threads.dbStorage()->flush();
+        Search::Engine.dbStorage()->flush();
         auto endTime = now();
         MESSAGEL("Saved database file using " << (endTime - startTime) << " ms.");
     }
@@ -497,7 +497,7 @@ void saveDatabase()
 void databaseToTxt(bool currentBoardSizeAndRule)
 {
     auto txtPath = readPathFromInput();
-    if (Search::Threads.dbStorage()) {
+    if (Search::Engine.dbStorage()) {
         std::ofstream                                        txtout(txtPath);
         std::function<bool(const DBKey &, const DBRecord &)> filter = nullptr;
         if (currentBoardSizeAndRule)
@@ -505,7 +505,7 @@ void databaseToTxt(bool currentBoardSizeAndRule)
                 return key.boardHeight == board->size() && key.boardWidth == board->size()
                        && key.rule == options.rule.rule;
             };
-        ::Database::databaseToCSVFile(*Search::Threads.dbStorage(), txtout, filter);
+        ::Database::databaseToCSVFile(*Search::Engine.dbStorage(), txtout, filter);
         MESSAGEL("Wrote " << (currentBoardSizeAndRule ? "(current boardsize and rule)" : "(all)")
                           << " database to csv-format text file " << pathToConsoleString(txtPath));
     }
@@ -514,7 +514,7 @@ void databaseToTxt(bool currentBoardSizeAndRule)
 void libToDatabase()
 {
     auto libPath = readPathFromInput();
-    if (Search::Threads.dbStorage()) {
+    if (Search::Engine.dbStorage()) {
         MESSAGEL("Importing from lib file " << pathToConsoleString(libPath)
                                             << ", this might take a while...");
         auto          startTime = now();
@@ -525,7 +525,7 @@ void libToDatabase()
         }
 
         try {
-            size_t writeCount = ::Database::importLibToDatabase(*Search::Threads.dbStorage(),
+            size_t writeCount = ::Database::importLibToDatabase(*Search::Engine.dbStorage(),
                                                                 libStream,
                                                                 options.rule,
                                                                 board ? board->size() : 15);
@@ -542,7 +542,7 @@ void libToDatabase()
 void databaseToLib()
 {
     auto libPath = readPathFromInput();
-    if (Search::Threads.dbStorage()) {
+    if (Search::Engine.dbStorage()) {
         MESSAGEL("Exporting to lib file " << pathToConsoleString(libPath)
                                           << ", this might take a while...");
         auto          startTime = now();
@@ -553,7 +553,7 @@ void databaseToLib()
         }
 
         try {
-            DBClient dbClient(*Search::Threads.dbStorage(), RECORD_MASK_ALL);
+            DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
             size_t   nodeCount =
                 ::Database::exportDatabaseToLib(dbClient, libStream, *board, options.rule);
             auto endTime = now();
@@ -569,7 +569,7 @@ void databaseToLib()
 void restart()
 {
     board->newGame(options.rule);
-    Search::Threads.clear(false);
+    Search::Engine.clear(false);
     std::cout << "OK" << std::endl;
 }
 
@@ -802,10 +802,10 @@ void queryDatabaseAll(bool getPosition)
     if (getPosition)
         getDatabasePosition();
 
-    if (Search::Threads.dbStorage()) {
+    if (Search::Engine.dbStorage()) {
         MESSAGEL("DATABASE REFRESH");
 
-        DBClient dbClient(*Search::Threads.dbStorage(), RECORD_MASK_ALL);
+        DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
 
         // Get all child records and child board texts
         auto childRecords     = dbClient.queryChildren(*board, options.rule);
@@ -869,8 +869,8 @@ void queryDatabaseOne(bool getPosition)
     if (getPosition)
         getDatabasePosition();
 
-    if (Search::Threads.dbStorage()) {
-        DBClient dbClient(*Search::Threads.dbStorage(), RECORD_MASK_ALL);
+    if (Search::Engine.dbStorage()) {
+        DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
         DBRecord record;
         if (dbClient.query(*board, options.rule, record))
             MESSAGEL("DATABASE ONE " << int(record.label) << ' ' << record.value << ' '
@@ -887,8 +887,8 @@ void queryDatabaseText(bool getPosition)
     if (getPosition)
         getDatabasePosition();
 
-    if (Search::Threads.dbStorage()) {
-        DBClient dbClient(*Search::Threads.dbStorage(), RECORD_MASK_ALL);
+    if (Search::Engine.dbStorage()) {
+        DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
         DBRecord record;
         if (dbClient.query(*board, options.rule, record) && !record.isNull())
             MESSAGEL("DATABASE TEXT " << std::quoted(UTF8ToConsoleCP(record.comment())));
@@ -904,7 +904,7 @@ void editDatabaseTVD()
     std::cin >> updateMask >> newLabel >> newValue >> newDepth;
     getDatabasePosition();
 
-    if (Search::Threads.dbStorage() && !Config::DatabaseReadonlyMode) {
+    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
         switch (newLabel) {
         case 'W': newLabel = LABEL_WIN; break;
         case 'L': newLabel = LABEL_LOSE; break;
@@ -913,7 +913,7 @@ void editDatabaseTVD()
         default: break;
         }
 
-        DBClient dbClient(*Search::Threads.dbStorage(), (DBRecordMask)updateMask);
+        DBClient dbClient(*Search::Engine.dbStorage(), (DBRecordMask)updateMask);
         DBRecord record {DBLabel(newLabel), DBValue(newValue)};
         record.setDepthBound(newDepth, BOUND_EXACT);
         dbClient.save(*board, options.rule, record, OverwriteRule::Always);
@@ -929,8 +929,8 @@ void editDatabaseText()
     std::cin >> std::ws >> std::quoted(newText);
     getDatabasePosition();
 
-    if (Search::Threads.dbStorage() && !Config::DatabaseReadonlyMode) {
-        DBClient dbClient(*Search::Threads.dbStorage(), RECORD_MASK_TEXT);
+    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
+        DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_TEXT);
         DBRecord record;
         if (!dbClient.query(*board, options.rule, record))
             record = DBRecord {LABEL_NONE};
@@ -955,8 +955,8 @@ void editDatabaseBoardLabel()
     if (!pos.has_value())
         return;
 
-    if (Search::Threads.dbStorage() && !Config::DatabaseReadonlyMode) {
-        DBClient dbClient(*Search::Threads.dbStorage(), RECORD_MASK_TEXT);
+    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
+        DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_TEXT);
         dbClient.setBoardText(*board, options.rule, *pos, ConsoleCPToUTF8(newText));
     }
 }
@@ -1083,15 +1083,15 @@ void deleteDatabaseAll(bool getPosition)
     if (getPosition)
         getDatabasePosition();
 
-    if (Search::Threads.dbStorage() && !Config::DatabaseReadonlyMode) {
+    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
         MESSAGEL("Deleting child records, this might take a while...");
         auto   startTime        = now();
-        size_t sizeBeforeDelete = Search::Threads.dbStorage()->size();
+        size_t sizeBeforeDelete = Search::Engine.dbStorage()->size();
         {
-            DBClient dbClient(*Search::Threads.dbStorage(), RECORD_MASK_ALL);
+            DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
             dbClient.delChildren(*board, options.rule, deleteFilter);
         }
-        size_t sizeAfterDelete = Search::Threads.dbStorage()->size();
+        size_t sizeAfterDelete = Search::Engine.dbStorage()->size();
         auto   endTime         = now();
         MESSAGEL("Done deleting " << (sizeBeforeDelete - sizeAfterDelete) << " records using "
                                   << (endTime - startTime) << " ms.");
@@ -1106,8 +1106,8 @@ void deleteDatabaseOne(bool getPosition)
     if (getPosition)
         getDatabasePosition();
 
-    if (Search::Threads.dbStorage() && !Config::DatabaseReadonlyMode) {
-        DBClient dbClient(*Search::Threads.dbStorage(), RECORD_MASK_ALL);
+    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
+        DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
         dbClient.del(*board, options.rule);
     }
 }
@@ -1121,11 +1121,11 @@ void searchDefend()
 void splitDatabase()
 {
     auto databasePath = readPathFromInput();
-    if (Search::Threads.dbStorage()) {
+    if (Search::Engine.dbStorage()) {
         std::string dbPathUTF8 = databasePath.u8string();
         if (auto dbToSplit = Config::createDefaultDBStorage(dbPathUTF8)) {
             auto   startTime  = now();
-            size_t writeCount = ::Database::splitDatabase(*Search::Threads.dbStorage(),
+            size_t writeCount = ::Database::splitDatabase(*Search::Engine.dbStorage(),
                                                           *dbToSplit,
                                                           *board,
                                                           options.rule);
@@ -1139,10 +1139,10 @@ void splitDatabase()
 void mergeDatabase()
 {
     auto databasePath = readPathFromInput();
-    if (Search::Threads.dbStorage()) {
+    if (Search::Engine.dbStorage()) {
         std::string dbPathUTF8 = databasePath.u8string();
         if (auto dbToMerge = Config::createDefaultDBStorage(dbPathUTF8)) {
-            size_t writeCount = mergeDatabase(*Search::Threads.dbStorage(),
+            size_t writeCount = mergeDatabase(*Search::Engine.dbStorage(),
                                               *dbToMerge,
                                               Config::DatabaseOverwriteRule);
             MESSAGEL("Merged " << writeCount << " out of " << dbToMerge->size()
@@ -1183,11 +1183,11 @@ void swap2board()
 
 void traceBoard()
 {
-    Search::Threads.waitForIdle();
-    Search::Threads.main()->searchOptions = options;
-    Search::Threads.main()->setBoardAndEvaluator(*board);
+    Search::Engine.waitForIdle();
+    Search::Engine.ctx.options = options;
+    Search::Engine.main()->setBoardAndEvaluator(*board);
 
-    std::string traceInfo  = Search::Threads.main()->board->trace();
+    std::string traceInfo  = Search::Engine.main()->board->trace();
     auto        traceLines = split(traceInfo, "\n");
     for (const auto &line : traceLines) {
         MESSAGEL(line);
@@ -1196,10 +1196,10 @@ void traceBoard()
 
 void traceSearch()
 {
-    Search::Threads.waitForIdle();
-    Search::Threads.main()->searchOptions = options;
-    Search::Threads.main()->setBoardAndEvaluator(*board);
-    Board &board = *Search::Threads.main()->board;
+    Search::Engine.waitForIdle();
+    Search::Engine.ctx.options = options;
+    Search::Engine.main()->setBoardAndEvaluator(*board);
+    Board &board = *Search::Engine.main()->board;
 
     // Legal moves
     Search::MovePicker movePicker(options.rule,
@@ -1290,8 +1290,8 @@ bool runProtocol()
     };
 
     // clang-format off
-    if (cmd == "END")                          return Search::Threads.stopThinking(), true;
-    else if (cmd == "STOP" || cmd == "YXSTOP") return Search::Threads.stopThinking(), false;
+    if (cmd == "END")                          return Search::Engine.stopThinking(), true;
+    else if (cmd == "STOP" || cmd == "YXSTOP") return Search::Engine.stopThinking(), false;
     else if (thinking)                         return false;
 
 #ifdef MULTI_THREADING
@@ -1305,7 +1305,7 @@ bool runProtocol()
      && cmd != "YXQUERYDATABASEALL"
      && cmd != "YXQUERYDATABASEONE"
      && cmd != "YXQUERYDATABASETEXT"
-     && cmd != "YXQUERYDATABASEALLT")      Search::Threads.stopThinking();
+     && cmd != "YXQUERYDATABASEALLT")      Search::Engine.stopThinking();
 
     if (cmd == "ABOUT")                    std::cout << getEngineInfo() << std::endl;
     else if (cmd == "START")               start();
@@ -1416,8 +1416,8 @@ void Command::gomocupLoop()
     }
 
     // If there is any thread still running, wait until they exited.
-    Search::Threads.waitForIdle();
-    Search::Threads.setNumThreads(0);
+    Search::Engine.waitForIdle();
+    Search::Engine.setNumThreads(0);
 
 #ifdef __EMSCRIPTEN__
     emscripten_force_exit(EXIT_SUCCESS);

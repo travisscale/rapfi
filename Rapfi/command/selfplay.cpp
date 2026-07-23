@@ -313,8 +313,8 @@ void Command::selfplay(int argc, char *argv[])
     Config::AspirationWindow = true;
 
     // Set num threads and TT size
-    Search::Threads.setNumThreads(numThreads);
-    Search::Threads.searcher()->setMemoryLimit(hashSizeMb * 1024);
+    Search::Engine.setNumThreads(numThreads);
+    Search::Engine.searcher()->setMemoryLimit(hashSizeMb * 1024);
 
     PRNG                               prng = PRNG::nondeterministic();
     std::uniform_int_distribution<int> boardSizeDis(boardSizeMin, boardSizeMax);
@@ -371,7 +371,7 @@ void Command::selfplay(int argc, char *argv[])
         options.multiPV             = multipv;
         options.balanceMode         = Search::SearchOptions::BALANCE_NONE;
         options.disableOpeningQuery = true;
-        Search::Threads.clear(true);
+        Search::Engine.clear(true);
 
         // Setup game entry data
         GameEntry gameEntry;
@@ -398,9 +398,9 @@ void Command::selfplay(int argc, char *argv[])
                 options.multiPV = std::max(1, options.multiPV - 1);
 
             // Start thinking and wait for finish
-            Search::Threads.startThinking(board, options);
-            Search::Threads.waitForIdle();
-            auto mainThread = Search::Threads.main();
+            Search::Engine.startThinking(board, options);
+            Search::Engine.waitForIdle();
+            auto mainThread = Search::Engine.main();
 
             // We might have no legal move in Renju mode, which is regarded as loss
             if (mainThread->rootMoves.empty()) {
@@ -410,7 +410,7 @@ void Command::selfplay(int argc, char *argv[])
 
             // Record best move result
             searchValue  = mainThread->rootMoves[0].value;
-            Pos bestMove = mainThread->bestMove;
+            Pos bestMove = Search::Engine.ctx.bestMove;
             gameEntry.moveSequence.push_back({bestMove, Eval(searchValue)});
             if (options.multiPV > 1) {
                 auto &moveData   = gameEntry.moveSequence.back();

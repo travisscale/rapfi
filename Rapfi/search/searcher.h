@@ -22,9 +22,10 @@
 
 namespace Search {
 
-class SearchThread;       // forward declaration
-class MainSearchThread;  // forward declaration
-class ThreadPool;         // forward declaration
+class SearchThread;  // forward declaration
+class SearchEngine;    // forward declaration
+class TimeControl;   // forward declaration
+struct RootMove;     // forward declaration
 
 struct SearchData
 {
@@ -38,6 +39,14 @@ struct SearchData
 class Searcher
 {
 public:
+    /// Preserves the current output asymmetry of the two searchers on the
+    /// instant-win path: whether the session driver prints a bestmove-without-
+    /// search message when an immediate A_FIVE win is found (AB does, MCTS
+    /// does not). Pending unification as a separate behavior-changing commit.
+    const bool printsTrivialBestmove;
+
+    explicit Searcher(bool printsTrivialBestmove) : printsTrivialBestmove(printsTrivialBestmove)
+    {}
     virtual ~Searcher() = default;
 
     /// Creates a instance of search data for one search thread.
@@ -51,20 +60,28 @@ public:
     virtual size_t getMemoryLimit() const = 0;
 
     /// Clear all searcher states between different games.
-    /// @param pool The thread pool that holds all the search threads.
+    /// @param engine The search engine that holds all the search threads.
     /// @param clearAllMemory Whether to clear all memory (TT, etc.)
-    /// @note All threads in pool is guaranteed to be created by this searcher.
-    virtual void clear(ThreadPool &pool, bool clearAllMemory) = 0;
+    /// @note All threads in the engine are guaranteed to be created by this searcher.
+    virtual void clear(SearchEngine &engine, bool clearAllMemory) = 0;
 
-    /// Main-thread search entry point. After threadpool have finished preparation,
-    /// this function is called. It is responsible for starting all other threads.
-    virtual void searchMain(MainSearchThread &th) = 0;
+    /// Main-thread search entry point: the algorithm middle of one search
+    /// session, called by the session driver after the trivial cases have been
+    /// handled and the clock started. It is responsible for starting all other
+    /// threads.
+    /// @return The root move carrying the final choice (the driver then applies
+    ///     the common result finalization), or nullptr if the search concluded
+    ///     internally (early-out paths keep their exact semantics and skip the
+    ///     common finalization).
+    virtual const RootMove *searchMain(SearchThread &th) = 0;
     /// Worker-thread search entry point. This function is called by each worker thread.
     virtual void search(SearchThread &th) = 0;
 
-    /// Checks if a search reaches timeup condition.
+    /// Checks if a search reaches timeup condition. The timeup policy differs
+    /// per algorithm (AB stops at maximum; MCTS stops at optimum).
+    /// @param timectl The time controller of the current search context.
     /// @return True if time is up, otherwise false.
-    virtual bool checkTimeupCondition() = 0;
+    virtual bool checkTimeupCondition(const TimeControl &timectl) = 0;
 };
 
 }  // namespace Search
