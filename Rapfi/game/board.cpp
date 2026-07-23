@@ -19,7 +19,6 @@
 #include "board.h"
 
 #include "../config.h"
-
 #include "../core/iohelper.h"
 #include "../core/pos.h"
 #include "../core/utils.h"
@@ -31,7 +30,6 @@
 #include <cstring>  // for std::memset
 #include <iomanip>
 #include <sstream>
-#include <tuple>
 
 namespace {
 
@@ -78,10 +76,10 @@ Board::Board(int boardSize, CandidateRange candRange)
     assert(0 < boardSize && boardSize <= MAX_BOARD_SIZE);
     // One extra slot for the initial (pre-move) ply; *2 leaves room for pass moves on top of the
     // at-most-boardCellCount stone moves.
-    stateInfos  = std::make_unique<StateInfo[]>(1 + boardCellCount * 2);
-    updateCache = std::make_unique<UpdateCache[]>(1 + boardCellCount * 2);
-    candJournal = std::make_unique<CandJournalEntry[]>(CAND_JOURNAL_CAPACITY);
-    journalTop  = 0;
+    stateInfos   = std::make_unique<StateInfo[]>(1 + boardCellCount * 2);
+    moveRestores = std::make_unique<MoveRestore[]>(1 + boardCellCount * 2);
+    candJournal  = std::make_unique<CandJournalEntry[]>(CAND_JOURNAL_CAPACITY);
+    journalTop   = 0;
 
     // Set candidate range of the board. FULL_BOARD yields a null table (every empty cell is a
     // candidate, seeded once in newGame).
@@ -115,11 +113,11 @@ Board::Board(const Board &other, Search::SearchThread *thread)
     onBoardBB = other.onBoardBB;
     emptyBB   = other.emptyBB;
 
-    stateInfos  = std::make_unique<StateInfo[]>(1 + boardCellCount * 2);
-    updateCache = std::make_unique<UpdateCache[]>(1 + boardCellCount * 2);
+    stateInfos   = std::make_unique<StateInfo[]>(1 + boardCellCount * 2);
+    moveRestores = std::make_unique<MoveRestore[]>(1 + boardCellCount * 2);
     // Only copy stateinfo in [0, moveCount]
     std::copy_n(other.stateInfos.get(), 1 + moveCount, stateInfos.get());
-    std::copy_n(other.updateCache.get(), 1 + moveCount, updateCache.get());
+    std::copy_n(other.moveRestores.get(), 1 + moveCount, moveRestores.get());
 
     candJournal  = std::make_unique<CandJournalEntry[]>(CAND_JOURNAL_CAPACITY);
     candidatesBB = other.candidatesBB;
@@ -166,8 +164,7 @@ void Board::newGame()
         emptyBB.set(i);
     }
 
-    // Init state info of the first ply with rule R (the memset zeroes journalStart too,
-    // matching journalTop == 0 above)
+    // Initialize the first ply. The memset also anchors its empty candidate journal.
     StateInfo &st = stateInfos[moveCount];
     std::memset(&st, 0, sizeof(StateInfo));
 
@@ -180,13 +177,18 @@ void Board::newGame()
             assert(p2x[dir].patBlack <= F1 && p2x[dir].patWhite <= F1);
         }
 
-        PatternCode pcodeBlack = pcode<BLACK>(pos), pcodeWhite = pcode<WHITE>(pos);
-        Pattern4    p4Black    = (Pattern4)Evaluation::getP4Score(R, BLACK, pcodeBlack);
-        Pattern4    p4White    = (Pattern4)Evaluation::getP4Score(R, WHITE, pcodeWhite);
-        pattern4x2[pos]        = uint8_t(p4Black) | uint8_t(p4White) << 4;
+        PatternConfig::PCodeP4 cpBlack =
+            PatternConfig::pcodeTable<R, BLACK>()[p2x[0].patBlack][p2x[1].patBlack][p2x[2].patBlack]
+                                                 [p2x[3].patBlack];
+        PatternConfig::PCodeP4 cpWhite =
+            PatternConfig::pcodeTable<R, WHITE>()[p2x[0].patWhite][p2x[1].patWhite][p2x[2].patWhite]
+                                                 [p2x[3].patWhite];
+        Pattern4 p4Black = cpBlack.pattern4();
+        Pattern4 p4White = cpWhite.pattern4();
+        pattern4x2[pos]  = packP4Pair(p4Black, p4White);
         st.p4Count[BLACK][p4Black]++;
         st.p4Count[WHITE][p4White]++;
-        valueBlack += Evaluation::getValueBlack(R, pcodeBlack, pcodeWhite);
+        valueBlack += Evaluation::getValueBlack(R, cpBlack.pcode(), cpWhite.pcode());
     }
     st.valueBlack = valueBlack;
     st.candArea   = CandArea();
@@ -216,7 +218,7 @@ void Board::move(Pos pos)
         StateInfo &st   = stateInfos[++moveCount];
         st              = stateInfos[moveCount - 1];
         st.lastMove     = Pos::PASS;
-        st.journalStart = journalTop;  // overwrite the copied anchor: this ply owns new entries
+        st.journalStart = journalTop;
 
         passCount[currentSide]++;
         currentSide = ~currentSide;
@@ -234,20 +236,22 @@ void Board::move(Pos pos)
     if (MT == MoveType::NORMAL && evaluator_)
         evaluator_->beforeMove(*this, pos);
 
-    UpdateCache &pc = updateCache[moveCount];
-    StateInfo   &st = stateInfos[++moveCount];
-    st              = stateInfos[moveCount - 1];
-    st.lastMove     = pos;
-    st.journalStart = journalTop;  // overwrite the copied anchor: this ply owns new entries
+    MoveRestore &restore = moveRestores[moveCount];
+    StateInfo   &st      = stateInfos[++moveCount];
+    st                   = stateInfos[moveCount - 1];
+    st.lastMove          = pos;
+    st.journalStart      = journalTop;
     st.candArea.expand(pos, boardSize, candAreaExpandDist);
 
     currentZobristKey ^= Hash::zobrist[currentSide][pos];
     flipBitKey(pos, currentSide);
     emptyBB.clear(pos);
 
-    Value deltaValueBlack            = VALUE_ZERO;
-    int   f4CountBeforeMove[SIDE_NB] = {p4Count(BLACK, B_FLEX4), p4Count(WHITE, B_FLEX4)};
-    int   updateCacheIdx             = 0;
+    Value    deltaValueBlack            = VALUE_ZERO;
+    int      f4CountBeforeMove[SIDE_NB] = {p4Count(BLACK, B_FLEX4), p4Count(WHITE, B_FLEX4)};
+    int      restoreIdx                 = 0;
+    uint64_t touchedMask                = 0;
+    int      stepIdx                    = 0;
 
     // Placing a stone only changes the line patterns of the cells within L steps of `pos` along
     // each of the 4 directions. We walk those cells from i=-L to i=+L (skipping i=0, the stone
@@ -264,61 +268,76 @@ void Board::move(Pos pos)
         rotr(bitKey3[FULL_BOARD_SIZE - 1 - x + y], 2 * (x - 2 * L)),
     };
 
-    for (int i = -L; i <= L; i += 1 + (i == -1)) {
+    for (int i = -L; i <= L; i += 1 + (i == -1), stepIdx++) {
         for (int dir = 0; dir < 4; dir++) {
             Pos posi = pos + DIRECTION[dir] * i;
             // Current cell's 2-bit occupancy code sits at bit offset 2L of the pre-rotated
-            // window; 0b11 = empty. Replaces the per-cell piece load.
-            // Debug cross-check (keep through stage 6): register test must agree with emptyBB.
+            // window; 0b11 = empty. The debug check keeps the register test aligned with
+            // the empty-cell bitboard.
             assert((((bitKey[dir] >> (2 * L)) & 0b11) == 0b11) == emptyBB.test(posi));
             if (((bitKey[dir] >> (2 * L)) & 0b11) != 0b11)
                 continue;
 
-            Pattern2x *p2x    = pattern2xs[posi];
-            uint8_t    p4Pair = pattern4x2[posi];
+            Pattern2x      *p2x    = pattern2xs[posi];
+            const Pattern2x oldP2x = p2x[dir];
+            const Pattern2x newP2x = PatternConfig::lookupPattern<R>(bitKey[dir]);
+            const uint8_t   p4Pair = pattern4x2[posi];
 
-            // Save the cell's pre-update line pattern and pattern4 pair so undo() can
-            // restore them verbatim (captured before any write to the cell).
-            pc[updateCacheIdx].pattern2x    = p2x[dir];
-            pc[updateCacheIdx].pattern4Pair = p4Pair;
-            updateCacheIdx++;
-
-            // PCODE is order-independent, so index it with the changed direction last:
-            // the three unchanged directions give one base row per color, and the old and
-            // new pcode are two loads from that same 16-entry row.
-            const int          d1 = (dir + 1) & 3, d2 = (dir + 2) & 3, d3 = (dir + 3) & 3;
-            const PatternCode *rowBlack =
-                PatternConfig::PCODE[p2x[d1].patBlack][p2x[d2].patBlack][p2x[d3].patBlack];
-            const PatternCode *rowWhite =
-                PatternConfig::PCODE[p2x[d1].patWhite][p2x[d2].patWhite][p2x[d3].patWhite];
-            const Pattern oldBlack = p2x[dir].patBlack;
-            const Pattern oldWhite = p2x[dir].patWhite;
-
-            p2x[dir] = PatternConfig::lookupPattern<R>(bitKey[dir]);
-
-            PatternCode pcodeBlack = rowBlack[p2x[dir].patBlack];
-            PatternCode pcodeWhite = rowWhite[p2x[dir].patWhite];
-
-            if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
-                // The old value is no longer cached on the cell: rebuild it from the old
-                // pcodes (same-row loads) so the incremental sum stays bit-identical.
-                deltaValueBlack +=
-                    Evaluation::getValueBlack(R, pcodeBlack, pcodeWhite)
-                    - Evaluation::getValueBlack(R, rowBlack[oldBlack], rowWhite[oldWhite]);
+            if (newP2x == oldP2x) {
+                // An unchanged two-color line pattern leaves pcode, Pattern4 and evaluation
+                // unchanged, so it needs no restore entry. Preserve the full path's
+                // lastPattern4Move refresh for tactical patterns.
+                if (UNLIKELY((p4Pair & 0xF) >= C_BLOCK4_FLEX3 || (p4Pair >> 4) >= C_BLOCK4_FLEX3)) {
+                    st.setLastPattern4(BLACK, Pattern4(p4Pair & 0xF), posi);
+                    st.setLastPattern4(WHITE, Pattern4(p4Pair >> 4), posi);
+                }
+                continue;
             }
 
-            Pattern4 p4Black = (Pattern4)Evaluation::getP4Score(R, BLACK, pcodeBlack);
-            Pattern4 p4White = (Pattern4)Evaluation::getP4Score(R, WHITE, pcodeWhite);
+            // Save the cell's pre-update line pattern and pattern4 pair so undo() can
+            // restore them verbatim, and mark this walk slot in the touched mask.
+            restore.cells[restoreIdx].pattern2x    = oldP2x;
+            restore.cells[restoreIdx].pattern4Pair = p4Pair;
+            restoreIdx++;
+            touchedMask |= uint64_t(1) << (stepIdx * 4 + dir);
+
+            p2x[dir] = newP2x;
+
+            // PCODE rows are order-independent, so index them with the changed direction
+            // last: the three unchanged directions give one base row per color, and the old
+            // and new entries are two loads from that same 16-entry row. The fused entries
+            // already carry their Pattern4, so no dependent PATTERN4-by-pcode load is needed
+            // (renju black reads the forbid-marking table variant).
+            const int d1 = (dir + 1) & 3, d2 = (dir + 2) & 3, d3 = (dir + 3) & 3;
+            const PatternConfig::PCodeP4 *rowBlack =
+                PatternConfig::pcodeTable<R, BLACK>()[p2x[d1].patBlack][p2x[d2].patBlack]
+                                                     [p2x[d3].patBlack];
+            const PatternConfig::PCodeP4 *rowWhite =
+                PatternConfig::pcodeTable<R, WHITE>()[p2x[d1].patWhite][p2x[d2].patWhite]
+                                                     [p2x[d3].patWhite];
+
+            PatternConfig::PCodeP4 cpBlack = rowBlack[newP2x.patBlack];
+            PatternConfig::PCodeP4 cpWhite = rowWhite[newP2x.patWhite];
+
+            if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
+                // Cell values are not cached: rebuild the pre-move value from the old
+                // pcodes (same-row loads) so the incremental sum stays bit-identical.
+                deltaValueBlack += Evaluation::getValueBlack(R, cpBlack.pcode(), cpWhite.pcode())
+                                   - Evaluation::getValueBlack(R,
+                                                               rowBlack[oldP2x.patBlack].pcode(),
+                                                               rowWhite[oldP2x.patWhite].pcode());
+            }
+
+            Pattern4 p4Black = cpBlack.pattern4();
+            Pattern4 p4White = cpWhite.pattern4();
             st.p4Count[BLACK][p4Pair & 0xF]--;
             st.p4Count[WHITE][p4Pair >> 4]--;
             st.p4Count[BLACK][p4Black]++;
             st.p4Count[WHITE][p4White]++;
-            pattern4x2[posi] = uint8_t(p4Black) | uint8_t(p4White) << 4;
+            pattern4x2[posi] = packP4Pair(p4Black, p4White);
 
-            if (p4Black >= C_BLOCK4_FLEX3)
-                st.lastPattern4Move[BLACK][p4Black - C_BLOCK4_FLEX3] = posi;
-            if (p4White >= C_BLOCK4_FLEX3)
-                st.lastPattern4Move[WHITE][p4White - C_BLOCK4_FLEX3] = posi;
+            st.setLastPattern4(BLACK, p4Black, posi);
+            st.setLastPattern4(WHITE, p4White, posi);
         }
 
         const int shamt = 2 + 2 * (i == -1);
@@ -327,13 +346,14 @@ void Board::move(Pos pos)
         bitKey[2] >>= shamt;
         bitKey[3] >>= shamt;
     }
+    restore.touchedMask = touchedMask;
 
     // The placed cell is no longer empty: drop its own (now stale) value and p4 contributions
     // that were folded in above. Its pattern2x entries are frozen at their valid empty-cell
     // state (the walk skips i == 0), so the stale value is rebuilt from its pcodes.
     if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
-        st.valueBlack += deltaValueBlack
-                         - Evaluation::getValueBlack(R, pcode<BLACK>(pos), pcode<WHITE>(pos));
+        const auto [pcodeBlack, pcodeWhite] = pcodePair(pos);
+        st.valueBlack += deltaValueBlack - Evaluation::getValueBlack(R, pcodeBlack, pcodeWhite);
     }
     st.p4Count[BLACK][pattern4x2[pos] & 0xF]--;
     st.p4Count[WHITE][pattern4x2[pos] >> 4]--;
@@ -342,7 +362,8 @@ void Board::move(Pos pos)
         currentSide = ~currentSide;
 
     assert(checkP4(this));
-    assert(updateCacheIdx <= std::tuple_size_v<UpdateCache>);
+    assert(restoreIdx <= int(arraySize(restore.cells)));
+    assert(restoreIdx == popcount(touchedMask));
 
     // Mark the new stone's candidate neighborhood in the board-level candidate bitboard,
     // journaling the 0->1 transitions so undo() can rewind them.
@@ -411,28 +432,29 @@ void Board::undo()
     emptyBB.set(lastPos);
 
     moveCount--;
-    const UpdateCache &pc             = updateCache[moveCount];
-    int                updateCacheIdx = 0;
+    const MoveRestore &restore    = moveRestores[moveCount];
+    int                restoreIdx = 0;
 
-    // Mirror move()'s line walk over the same cells in the same order, restoring each cell's
-    // changed-direction line pattern and pattern4 pair straight from the saved UpdateCache —
-    // no bitkey window or table lookup needed. Occupancy is unchanged between move() and here
-    // (the stone was removed above), so emptyBB selects exactly the same cell set.
+    // Restore exactly the cells move() recorded: each set bit of touchedMask encodes a walk
+    // slot (step*4 + dir), mapped back to its Pos via the walk's step offsets. Entries are
+    // stored compactly in walk order, so entry k pairs with the mask's k-th set bit — no
+    // bitkey window, table lookup, or emptyBB scan needed.
     constexpr int L = PatternConfig::HalfLineLen<R>;
-    for (int i = -L; i <= L; i += 1 + (i == -1)) {
-        for (int dir = 0; dir < 4; dir++) {
-            Pos posi = lastPos + DIRECTION[dir] * i;
-            if (!emptyBB.test(posi))
-                continue;
+    // Walk steps cover i = -L..-1 then +1..+L, so step k maps to offset k-L (k < L) or k-L+1.
+    for (uint64_t mask = restore.touchedMask; mask;) {
+        const int slot = pop_lsb(mask);
+        const int step = slot >> 2, dir = slot & 3;
+        const int i    = step < L ? step - L : step - L + 1;
+        Pos       posi = lastPos + DIRECTION[dir] * i;
+        assert(emptyBB.test(posi));
 
-            pattern2xs[posi][dir] = pc[updateCacheIdx].pattern2x;
-            pattern4x2[posi]      = pc[updateCacheIdx].pattern4Pair;
-            updateCacheIdx++;
-        }
+        pattern2xs[posi][dir] = restore.cells[restoreIdx].pattern2x;
+        pattern4x2[posi]      = restore.cells[restoreIdx].pattern4Pair;
+        restoreIdx++;
     }
 
     assert(checkP4(this));
-    assert(updateCacheIdx <= std::tuple_size_v<UpdateCache>);
+    assert(restoreIdx <= int(arraySize(restore.cells)));
     // Journal round-trip invariant: the rewind above restored the dying ply's anchor.
     assert(journalTop == stateInfos[moveCount + 1].journalStart);
 
@@ -532,10 +554,10 @@ bool Board::checkForbiddenPoint(Pos pos) const
 
 Score Board::score(Rule rule, Pos pos, Color side) const
 {
-    Pattern4Score p4ScoreBlack = Evaluation::getP4Score(rule, BLACK, pcode<BLACK>(pos));
-    Pattern4Score p4ScoreWhite = Evaluation::getP4Score(rule, WHITE, pcode<WHITE>(pos));
-    return side == BLACK ? p4ScoreBlack.scoreSelf() + p4ScoreWhite.scoreOppo()
-                         : p4ScoreWhite.scoreSelf() + p4ScoreBlack.scoreOppo();
+    const auto [pcodeBlack, pcodeWhite] = pcodePair(pos);
+    MoveScorePair scoreBlack            = Evaluation::getMoveScorePair(rule, BLACK, pcodeBlack);
+    MoveScorePair scoreWhite            = Evaluation::getMoveScorePair(rule, WHITE, pcodeWhite);
+    return side == BLACK ? scoreBlack.self + scoreWhite.oppo : scoreWhite.self + scoreBlack.oppo;
 }
 
 Pos Board::getLastActualMoveOfSide(Color side) const

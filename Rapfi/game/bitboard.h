@@ -28,7 +28,7 @@
 /// A one-bit-per-cell set over the whole padded board address space, indexed directly by `Pos`
 /// (`pos >> 6` is the word, `pos & 63` the bit). Backs the on-board, empty, and candidate cell
 /// sets so each can be iterated with pop_lsb instead of a full-board branch scan. Trivially
-/// copyable, so the candidate set rides the per-ply StateInfo snapshot.
+/// copyable, so candidate iteration can use a cheap by-value snapshot.
 struct Bitboard
 {
     static constexpr int NumWords = FULL_BOARD_CELL_COUNT / 64;
@@ -90,7 +90,8 @@ struct Bitboard
 
     /// A candidate range (the neighbour offsets around a played stone) recast as one dx-bitmask per
     /// board row (index `dy + 4`, bit `dx + 4`), so forEachStencilWord() can OR the whole
-    /// neighbourhood in as a few word-wide ops. Each stencil row fits within a single bitboard word.
+    /// neighbourhood in as a few word-wide ops. Each stencil row fits within a single bitboard
+    /// word.
     struct Stencil
     {
         uint32_t row[9];
@@ -115,7 +116,6 @@ struct Bitboard
 
     /// Compute the stencil's candidate neighbourhood, centred at `center`, and hand each
     /// affected (wordIdx, bits) pair to `apply` — the caller owns the OR (and journaling).
-    /// Bit placement is identical to the former in-place applyStencil.
     template <typename ApplyFn>
     static void forEachStencilWord(const Stencil &stencil, Pos center, ApplyFn &&apply)
     {

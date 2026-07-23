@@ -539,23 +539,23 @@ void Tuner::initParams()
         }
 
         if (config.tuneMoveScore) {
-            addArrayParams<Pattern4Score, arraySize(Evaluation::P4SCORES[0]), 2>(
+            addArrayParams<MoveScorePair, arraySize(Evaluation::P4SCORES[0]), 2>(
                 Evaluation::P4SCORES[r],
                 [invScale   = 1.0 / config.moveScoreScale,
                  bias       = config.moveScoreBias,
                  randomInit = config.randomMoveScoreInit,
                  &rand,
-                 &prng](const Pattern4Score &p4score, size_t offset) {
-                    Float score = (Score)p4score[offset];
+                 &prng](const MoveScorePair &scorePair, size_t offset) {
+                    Float score = scorePair[offset];
                     return TuneParam(randomInit ? rand(prng) : (score - bias) * invScale);
                 },
                 [scoreMin = (Float)config.moveScoreMin,
                  scoreMax = (Float)config.moveScoreMax,
                  scale    = config.moveScoreScale,
                  bias =
-                     config.moveScoreBias](Pattern4Score &p4score, size_t offset, TuneParam param) {
-                    Float score     = param * scale + bias;
-                    p4score[offset] = (Score)std::clamp(score, scoreMin, scoreMax);
+                     config.moveScoreBias](MoveScorePair &scorePair, size_t offset, TuneParam param) {
+                    Float score       = param * scale + bias;
+                    scorePair[offset] = (Score)std::clamp(score, scoreMin, scoreMax);
                 });
         }
     }

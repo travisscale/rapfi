@@ -64,7 +64,7 @@ float ScalingFactor = 200.0f;
 
 Eval          EVALS[RULE_NB + 1][PCODE_NB];
 Eval          EVALS_THREAT[RULE_NB + 1][THREAT_NB];
-Pattern4Score P4SCORES[RULE_NB + 1][PCODE_NB];
+MoveScorePair P4SCORES[RULE_NB + 1][PCODE_NB];
 
 }  // namespace Evaluation
 
@@ -697,7 +697,7 @@ void Config::readValueModel(const cpptoml::table &t, SetterType setter)
                             }
                             val = std::clamp((int64_t)std::round(val * valScale), valMin, valMax);
                             overflowCount += val < MinVal || val > MaxVal;
-                            setter(PatternConfig::PCODE[a][b][c][d], ValueType(val));
+                            setter(PatternConfig::PCODE[a][b][c][d].pcode(), ValueType(val));
                         }
         }
         else
@@ -736,7 +736,7 @@ void Config::readValueModel(const cpptoml::table &t, SetterType setter)
                             }
                             val = std::clamp((int64_t)std::round(val * valScale), valMin, valMax);
                             overflowCount += val < MinVal || val > MaxVal;
-                            setter(PatternConfig::PCODE[a][b][c][d], ValueType(val));
+                            setter(PatternConfig::PCODE[a][b][c][d].pcode(), ValueType(val));
                         }
         }
         else
