@@ -112,7 +112,7 @@ private:
 ///       uint16_t isFirst : 1;   // is this move the first in multipv?
 ///       uint16_t isLast : 1;    // is this move the last in multipv?
 ///       uint16_t isNoEval : 1;  // does this move contain no eval info?
-///       uint16_t isPass : 1;    // is this move a pass move (side not changed after this move)?
+///       uint16_t isPass : 1;    // is this a pass (yields the turn, places no stone)?
 ///       uint16_t reserved : 2;  // reserved for future use
 ///       uint16_t move : 10;     // move output from engine
 ///       int16_t  eval;          // eval output from engine

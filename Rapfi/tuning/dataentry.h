@@ -30,7 +30,17 @@
 namespace Tuning {
 
 /// Result represents the outcome of a finished game (based on current side to move).
+/// Point-of-view conventions across the data pipeline (convert with flipResult):
+///   - DataEntry::result is from the entry's side to move.
+///   - GameEntry::result is from white's point of view.
+///   - The binpack wire result is from the first mover of the move sequence.
 enum Result : uint8_t { RESULT_LOSS, RESULT_DRAW, RESULT_WIN, RESULT_UNKNOWN };
+
+/// The same outcome seen from the opponent's point of view.
+constexpr Result flipResult(Result result)
+{
+    return result == RESULT_UNKNOWN ? RESULT_UNKNOWN : Result(RESULT_WIN - result);
+}
 
 /// The rule value stored in the .bin/.binpack dataset formats is the Gomocup protocol
 /// rule number, NOT the internal Rule enum: 0=freestyle, 1=standard, 4=renju. The wire
@@ -184,12 +194,10 @@ struct DataEntry
         moveData    = nullptr;
     }
 
-    /// Returns the current side to move, considering pass moves.
-    Color sideToMove() const
-    {
-        int numPasses = std::count(position.begin(), position.end(), Pos::PASS);
-        return (numPasses + position.size()) % 2 == 0 ? BLACK : WHITE;
-    }
+    /// Returns the current side to move. Every move in `position` - pass moves
+    /// included - yields the turn to the opponent, matching Board::move(Pos::PASS),
+    /// the binpack reader and the Trainer-side reader.
+    Color sideToMove() const { return position.size() % 2 == 0 ? BLACK : WHITE; }
 
     /// The number of extra multi-pv moves.
     int numExtraPVs() const

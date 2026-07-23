@@ -247,7 +247,8 @@ GameEntry playOneGame(Board                            &board,
     Result result    = searchValue >= VALUE_MATE_IN_MAX_PLY    ? RESULT_WIN
                        : searchValue <= VALUE_MATED_IN_MAX_PLY ? RESULT_LOSS
                                                                : RESULT_DRAW;
-    gameEntry.result = board.sideToMove() == WHITE ? result : Result(RESULT_WIN - result);
+    // `result` is from the final side to move's pov; GameEntry::result is white pov.
+    gameEntry.result = board.sideToMove() == WHITE ? result : flipResult(result);
     return gameEntry;
 }
 

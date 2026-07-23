@@ -119,7 +119,8 @@ void DataWriter::writeEntriesInGame(const GameEntry                       &gameE
         gameEntry.initPosition,
         gameEntry.boardsize,
         gameEntry.rule,
-        startSide == WHITE ? gameEntry.result : Result(RESULT_WIN - gameEntry.result),
+        // GameEntry::result is white pov; the entry wants it from its side to move.
+        startSide == WHITE ? gameEntry.result : flipResult(gameEntry.result),
     };
 
     // The loop below lends the game's move data pointers to dataEntry without transferring
@@ -145,8 +146,9 @@ void DataWriter::writeEntriesInGame(const GameEntry                       &gameE
         if (!filter || filter(dataEntry))
             writeEntry(dataEntry);
 
+        // Every move (a pass included) yields the turn, so the result pov flips.
         dataEntry.position.push_back(moveData.move);
-        dataEntry.result = Result(RESULT_WIN - dataEntry.result);
+        dataEntry.result = flipResult(dataEntry.result);
     }
 }
 
@@ -277,16 +279,20 @@ public:
             // Flush previous game entry if any
             flushGameEntry(getStream());
 
-            // Setup temp state (assume no pass in initial position)
+            // Setup temp state. Position parity gives the side to move even when the
+            // position contains passes, since a pass yields the turn like any move;
+            // totalPly counts stones only, so passes are excluded.
             curResult     = dataEntry.result;
-            curSideToMove = dataEntry.position.size() % 2 == 0 ? BLACK : WHITE;
-            totalPly      = (uint32_t)dataEntry.position.size();
+            curSideToMove = dataEntry.sideToMove();
+            totalPly      = (uint32_t)std::count_if(dataEntry.position.begin(),
+                                               dataEntry.position.end(),
+                                               [](Pos p) { return p != Pos::PASS; });
 
             // Setup new game entry
             gameEntry.boardsize = dataEntry.boardsize;
             gameEntry.rule      = dataEntry.rule;
             gameEntry.result =
-                curSideToMove == WHITE ? dataEntry.result : Result(RESULT_WIN - dataEntry.result);
+                curSideToMove == WHITE ? dataEntry.result : flipResult(dataEntry.result);
             gameEntry.initPosition = {dataEntry.position.begin(), dataEntry.position.end()};
         }
 
@@ -316,11 +322,14 @@ public:
         }
         }
 
-        if (dataEntry.move != Pos::PASS) {
-            curResult     = Result(RESULT_WIN - curResult);
-            curSideToMove = ~curSideToMove;
+        // Every move yields the turn to the opponent - a pass too (it changes the side
+        // to move without placing a stone, so only totalPly skips it). The previous
+        // non-flipping pass handling disagreed with the readers on both sides of the
+        // pipeline and made checkDataEntryMatched split games at every pass.
+        curResult     = flipResult(curResult);
+        curSideToMove = ~curSideToMove;
+        if (dataEntry.move != Pos::PASS)
             totalPly++;
-        }
     }
 
     void addGameEntry(const GameEntry &gameEntry)
@@ -388,10 +397,11 @@ private:
             return false;
         if (curSideToMove != dataEntry.sideToMove())
             return false;
-        if (dataEntry.position.size() > totalPly)
-            return false;
-        if (gameEntry.initPosition.size() + gameEntry.moveSequence.size()
-            < dataEntry.position.size())
+        // A chained entry's position must be exactly the moves recorded so far
+        // (passes included on both sides). This also guards the prefix walk below
+        // against indexing past the end of a shorter position.
+        if (dataEntry.position.size()
+            != gameEntry.initPosition.size() + gameEntry.moveSequence.size())
             return false;
 
         size_t i = 0;
@@ -425,11 +435,19 @@ private:
         } ehead;
         uint16_t position[MAX_MOVES];  // move sequence that representing an opening position
 
+        // The wire has no pass flag for initial-position moves (only Move records
+        // carry isPass), so a pass in the opening is unrepresentable. Reject loudly
+        // instead of encoding it as a bogus on-board stone.
+        for (Pos p : gameEntry.initPosition)
+            if (p == Pos::PASS)
+                throw std::runtime_error(
+                    "packed binary format cannot store a pass move in the initial position");
+
         Color startSide = gameEntry.initPosition.size() % 2 == 0 ? BLACK : WHITE;
         ehead.boardSize = gameEntry.boardsize;
         ehead.rule      = encodeWireRule(gameEntry.rule);
-        ehead.result =
-            startSide == WHITE ? gameEntry.result : Result(RESULT_WIN - gameEntry.result);
+        // GameEntry::result is white pov; the wire wants the first mover's pov.
+        ehead.result   = startSide == WHITE ? gameEntry.result : flipResult(gameEntry.result);
         ehead.totalPly = totalPly;
         ehead.initPly  = (uint32_t)gameEntry.initPosition.size();
         ehead.gameTag  = 0;
@@ -453,7 +471,7 @@ private:
             uint16_t isFirst : 1;   // is this move the first in multipv?
             uint16_t isLast : 1;    // is this move the last in multipv?
             uint16_t isNoEval : 1;  // does this move contain no eval info?
-            uint16_t isPass : 1;    // is this move a pass move (side not changed after this move)?
+            uint16_t isPass : 1;    // is this a pass (yields the turn, places no stone)?
             uint16_t reserved : 2;  // reserved for future use
             uint16_t move : 10;     // move output from engine
             int16_t  eval;          // eval output from engine
