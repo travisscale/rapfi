@@ -49,6 +49,18 @@ ScoredMove *generateVCFMoves(Rule rule, const Board &board, ScoredMove *moveList
     return (rule == RENJU ? generate<VCF | RULE_RENJU> : generate<VCF>)(board, moveList);
 }
 
+/// Append defence moves against an opponent B4F3 threat using the rule-correct
+/// variant of the generator.
+ScoredMove *generateDefendB4F3Moves(Rule rule, const Board &board, ScoredMove *moveList)
+{
+    switch (rule) {
+    default:
+    case FREESTYLE: return generate<DEFEND_B4F3 | RULE_FREESTYLE>(board, moveList);
+    case STANDARD: return generate<DEFEND_B4F3 | RULE_STANDARD>(board, moveList);
+    case RENJU: return generate<DEFEND_B4F3 | RULE_RENJU>(board, moveList);
+    }
+}
+
 /// Partial sort the move list up to the score limit. It dynamiclly decides
 /// which sorting algorithm to use based on how many moves are in the list.
 template <typename Comparator>
@@ -132,12 +144,7 @@ MovePicker::MovePicker(Rule rule, const Board &board, ExtraArgs<MovePicker::ROOT
     }
     else if (board.p4Count(oppo, C_BLOCK4_FLEX3)
              && (rule != Rule::RENJU || validateOpponentCMove(board))) {
-        switch (rule) {
-        default:
-        case FREESTYLE: endMove = generate<DEFEND_B4F3 | RULE_FREESTYLE>(board, curMove); break;
-        case STANDARD: endMove = generate<DEFEND_B4F3 | RULE_STANDARD>(board, curMove); break;
-        case RENJU: endMove = generate<DEFEND_B4F3 | RULE_RENJU>(board, curMove); break;
-        }
+        endMove = generateDefendB4F3Moves(rule, board, curMove);
 
         if (endMove == curMove)
             endMove = generate<ALL>(board, curMove);
@@ -354,6 +361,19 @@ void MovePicker::scoreAllMoves()
     }
 }
 
+template <MovePicker::ScoreType ExtraFlags>
+void MovePicker::scoreAndSortMoves()
+{
+    if (useNormalizedPolicy) {
+        scoreAllMoves<ScoreType(BALANCED | POLICY)>();
+        fastPartialSort(curMove, endMove, 0, ScoredMove::PolicyComparator {});
+    }
+    else {
+        scoreAllMoves<ScoreType(BALANCED | POLICY | ExtraFlags)>();
+        fastPartialSort(curMove, endMove, 0, ScoredMove::ScoreComparator {});
+    }
+}
+
 /// Pick the next legal move until there is no legal move left.
 /// @return Next legal move, or Pos::NONE if there is no legal move left.
 Pos MovePicker::operator()()
@@ -372,15 +392,7 @@ top:
 
         curMove = moves;
         endMove = generate<ALL>(board, curMove);
-
-        if (useNormalizedPolicy) {
-            scoreAllMoves<ScoreType(BALANCED | POLICY)>();
-            fastPartialSort(curMove, endMove, 0, ScoredMove::PolicyComparator {});
-        }
-        else {
-            scoreAllMoves<ScoreType(BALANCED | POLICY | MAIN_HISTORY | COUNTER_MOVE)>();
-            fastPartialSort(curMove, endMove, 0, ScoredMove::ScoreComparator {});
-        }
+        scoreAndSortMoves<ScoreType(MAIN_HISTORY | COUNTER_MOVE)>();
 
         stage = ALLMOVES;
         goto top;
@@ -404,15 +416,7 @@ top:
         curMove = moves;
         endMove = generate<DEFEND_FOUR>(board, curMove);
         endMove = generateVCFMoves(rule, board, endMove);
-
-        if (useNormalizedPolicy) {
-            scoreAllMoves<ScoreType(BALANCED | POLICY)>();
-            fastPartialSort(curMove, endMove, 0, ScoredMove::PolicyComparator {});
-        }
-        else {
-            scoreAllMoves<ScoreType(BALANCED | POLICY | MAIN_HISTORY)>();
-            fastPartialSort(curMove, endMove, 0, ScoredMove::ScoreComparator {});
-        }
+        scoreAndSortMoves<MAIN_HISTORY>();
 
         stage = ALLMOVES;
         goto top;
@@ -421,12 +425,7 @@ top:
         assert(board.p4Count(~board.sideToMove(), C_BLOCK4_FLEX3));
 
         curMove = moves;
-        switch (rule) {
-        default:
-        case FREESTYLE: endMove = generate<DEFEND_B4F3 | RULE_FREESTYLE>(board, curMove); break;
-        case STANDARD: endMove = generate<DEFEND_B4F3 | RULE_STANDARD>(board, curMove); break;
-        case RENJU: endMove = generate<DEFEND_B4F3 | RULE_RENJU>(board, curMove); break;
-        }
+        endMove = generateDefendB4F3Moves(rule, board, curMove);
 
         if (endMove == curMove) {
             stage = MAIN_MOVES;
@@ -434,15 +433,7 @@ top:
         }
 
         endMove = generateVCFMoves(rule, board, endMove);
-
-        if (useNormalizedPolicy) {
-            scoreAllMoves<ScoreType(BALANCED | POLICY)>();
-            fastPartialSort(curMove, endMove, 0, ScoredMove::PolicyComparator {});
-        }
-        else {
-            scoreAllMoves<ScoreType(BALANCED | POLICY | MAIN_HISTORY)>();
-            fastPartialSort(curMove, endMove, 0, ScoredMove::ScoreComparator {});
-        }
+        scoreAndSortMoves<MAIN_HISTORY>();
 
         stage = ALLMOVES;
         goto top;

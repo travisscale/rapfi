@@ -16,7 +16,6 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../../config.h"
 #include "../../core/hash.h"
 #include "../../core/iohelper.h"
 #include "../../core/platform.h"
@@ -51,7 +50,21 @@ namespace {
 
 enum NodeType { Root, PV, NonPV };
 
-void iterativeDeepingLoop(Board &board);
+/// Stable-sort root moves [begin, end) best-first: by distance to the balanced
+/// eval (with `balanceBias`) in balance mode, by value otherwise. Stable sorting
+/// keeps the previous order of equal-valued moves (during a MultiPV iteration all
+/// values except the searched PV lines are VALUE_NONE).
+void sortRootMoves(RootMoves::iterator begin,
+                   RootMoves::iterator end,
+                   bool                balanceMode,
+                   int                 balanceBias = 0)
+{
+    if (balanceMode)
+        std::stable_sort(begin, end, BalanceMoveValueComparator {balanceBias});
+    else
+        std::stable_sort(begin, end, RootMoveValueComparator {});
+}
+
 void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue, Depth depth);
 template <NodeType NT = PV>
 Value search(Rule         rule,
@@ -168,7 +181,7 @@ const RootMove *ABSearcher::searchMain(SearchThread &th)
         }
     }
 
-    // Output search statistic infomation
+    // Output search statistic information
     ctx.printer.printSearchEnds(th,
                                 ctx.timectl,
                                 bestThread->searchDataAs<ABSearchData>()->completedDepth,
@@ -234,21 +247,17 @@ void ABSearcher::search(SearchThread &th)
                              th.rootMoves[sd.pvIdx].previousValue,
                              Depth(sd.rootDepth));
 
-            // Send out various infomation to GUI
+            // Send out various information to GUI
             if (mainThread)
                 ctx.printer
                     .printPvCompletes(*mainThread, ctx.timectl, sd.rootDepth, sd.pvIdx, sd.multiPv);
 
             // Sort the PV lines searched so far. When we are in balance move mode,
-            // sort according to negetive absolute value rather than its original value.
-            if (options.balanceMode)
-                std::stable_sort(th.rootMoves.begin(),
-                                 th.rootMoves.begin() + sd.pvIdx + 1,
-                                 BalanceMoveValueComparator {options.balanceBias});
-            else
-                std::stable_sort(th.rootMoves.begin(),
-                                 th.rootMoves.begin() + sd.pvIdx + 1,
-                                 RootMoveValueComparator {});
+            // sort according to negative absolute value rather than its original value.
+            sortRootMoves(th.rootMoves.begin(),
+                          th.rootMoves.begin() + sd.pvIdx + 1,
+                          options.balanceMode,
+                          options.balanceBias);
         }
 
         // If search is complete, update completed depth.
@@ -320,7 +329,7 @@ void ABSearcher::search(SearchThread &th)
     if (!mainThread)
         return;
 
-    // Save time adjustment infomation for next search
+    // Save time adjustment information for next search
     previousBestValue     = bestValue;
     previousTimeReduction = timeReduction;
 
@@ -444,15 +453,11 @@ void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue,
         // are set to -VALUE_INFINITE and we want to keep the same order for all the moves except
         // the new PV that goes to the front.
         // In case of MultiPV search, the already searched PV lines are preserved.
-        // When in balance mode, sort according to negetive absolute value.
-        if (thisThread->options().balanceMode)
-            std::stable_sort(thisThread->rootMoves.begin() + searchData->pvIdx,
-                             thisThread->rootMoves.end(),
-                             BalanceMoveValueComparator {});
-        else
-            std::stable_sort(thisThread->rootMoves.begin() + searchData->pvIdx,
-                             thisThread->rootMoves.end(),
-                             RootMoveValueComparator {});
+        // When in balance mode, sort according to negative absolute value.
+        // (Deliberately bias-less here, matching the original behavior.)
+        sortRootMoves(thisThread->rootMoves.begin() + searchData->pvIdx,
+                      thisThread->rootMoves.end(),
+                      thisThread->options().balanceMode);
 
         // If search has been stopped, break immediately. Sorting result is safe to use.
         if (thisThread->engine.isTerminating())
@@ -943,7 +948,7 @@ Value updateRootMove(Board       &board,
                        [thisThread->balance2Moves[Balance2Move {board.getLastMove(), move}]]
                  : *std::find(thisThread->rootMoves.begin(), thisThread->rootMoves.end(), move);
 
-    // If we are in balance move mode, map the original move value to its negetive
+    // If we are in balance move mode, map the original move value to its negative
     // absolute value, which makes best move and PV selection based on how balanced
     // a move is rather than how good a move is. Note that move value recorded in
     // RootMove is kept unchanged for better eval output.
@@ -1082,7 +1087,7 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
     // At non-PV nodes we check for an early TT cutoff
     if (!PvNode && ttHit && ttDepth >= depth
         && (ttBound & (ttValue >= beta ? BOUND_LOWER : BOUND_UPPER))) {
-        // Update move heruistics for ttMove
+        // Update move heuristics for ttMove
         histTracker.updateTTMoveStats(depth, ttMove, ttValue, beta);
         return ttValue;
     }
@@ -1143,8 +1148,8 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
         ss->currentMove = Pos::PASS;
 
         (ss + 1)->numNullMoves++;
+        TT.prefetch(board.zobristKeyAfter(Pos::PASS));  // pre-make: see Step 14
         board.move<Rule>(Pos::PASS);
-        TT.prefetch(board.zobristKey());
         value = -search<Rule, NonPV>(board, ss + 1, -beta, -beta + 1, depth - r, !cutNode);
         board.undo<Rule>();
         (ss + 1)->numNullMoves--;
@@ -1259,7 +1264,7 @@ moves_loop:
                                           searchData->rootDepth,
                                           move);
 
-        // Initialize heruistic information
+        // Initialize heuristic information
         ss->moveCount     = ++moveCount;
         ss->moveP4[BLACK] = board.pattern4(move, BLACK);
         ss->moveP4[WHITE] = board.pattern4(move, WHITE);
@@ -1360,8 +1365,12 @@ moves_loop:
         ss->extraExtension = (ss - 1)->extraExtension + std::max(extension - 1.0f, 0.0f);
 
         // Step 14. Make the move
+        // Prefetch the child's TT line before the board update, so the memory access
+        // overlaps the whole pattern walk instead of starting after it.
+        [[maybe_unused]] HashKey childKey = board.zobristKeyAfter(move);
+        TT.prefetch(childKey);
         board.move<Rule>(move);
-        TT.prefetch(board.zobristKey());
+        assert(board.zobristKey() == childKey);
 
         // Step 15. Late move reduction (LMR). Moves are searched with a reduced
         // depth and will be re-searched at full depth if fail high.
@@ -1546,7 +1555,7 @@ moves_loop:
                           [=](RootMove &rm) { rm.value = bestValue; });
         }
     }
-    // If we have found a best move, update move heruistics
+    // If we have found a best move, update move heuristics
     else if (bestMove)
         histTracker.updateBestmoveStats(depth, bestMove, bestValue);
 
@@ -1603,10 +1612,9 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
 
     // Step 1. Initialize node
     SearchThread *thisThread = board.thisThread();
-    ABSearchData *searchData = thisThread->searchDataAs<ABSearchData>();
     thisThread->numNodes.fetch_add(1, std::memory_order_relaxed);
 
-    Color self = board.sideToMove(), oppo = ~self;
+    Color self = board.sideToMove();
     int   moveCount = 0;
     Value bestValue = -VALUE_INFINITE, value;
     Value oldAlpha  = alpha;  // Flag BOUND_EXACT when value above alpha in PVNode
@@ -1836,8 +1844,8 @@ Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
         if (PvNode)
             (ss + 1)->pv[0] = Pos::NONE;
 
+        TT.prefetch(board.zobristKeyAfter(move));  // pre-make: see Step 14 of search()
         board.move<Rule>(move);
-        TT.prefetch(board.zobristKey());
 
         // Call attack-side vcf search
         // Note that we do not reduce depth for vcf defence move.

@@ -71,7 +71,12 @@ private:
     template <PickType T, typename Pred>
     Pos pickNextMove(Pred);
     template <ScoreType T>
-    void        scoreAllMoves();
+    void scoreAllMoves();
+    /// Score all generated moves and partial-sort them best-first: by policy when
+    /// normalized policy is enabled, otherwise by classical scores plus the extra
+    /// heuristic terms in `ExtraFlags`.
+    template <ScoreType ExtraFlags>
+    void        scoreAndSortMoves();
     ScoredMove *begin() { return curMove; }
     ScoredMove *end() { return endMove; }
 

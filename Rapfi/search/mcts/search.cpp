@@ -218,8 +218,8 @@ Value vcfdefend(Board &board, SearchStack *ss, int ply, Value alpha, Value beta,
         ss[ply].moveP4[BLACK] = board.pattern4(move, BLACK);
         ss[ply].moveP4[WHITE] = board.pattern4(move, WHITE);
 
+        TT.prefetch(board.zobristKeyAfter(move));  // pre-make, overlaps the board update
         board.move<Rule, Board::MoveType::NO_EVAL>(move);
-        TT.prefetch(board.zobristKey());
 
         // Call attack-side vcf search
         // Note that we do not reduce depth for vcf defence move.
