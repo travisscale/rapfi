@@ -18,8 +18,6 @@
 
 #include "renlib.h"
 
-#include "../config.h"
-#include "../core/iohelper.h"
 #include "../core/string.h"
 #include "../game/board.h"
 #include "dbclient.h"
@@ -378,9 +376,9 @@ void RenlibWriter::writeNode(int boardSize)
         writeByte(0);
     }
     else {
-        // X-coordinate starts from 0, Y-coordinate starts from 1
-        auto [x, y]      = outputCoordConvert(currentMove, boardSize, Config::IOCoordMode);
-        uint8_t moveByte = (x << 4) | ((y + 1) & 0x0f);
+        // Inverse of the reader's decoding: 1-based x in the low nibble, 0-based y
+        // in the high nibble, in raw board coordinates (no display conversion).
+        uint8_t moveByte = ((currentMove.y() & 0x0f) << 4) | ((currentMove.x() + 1) & 0x0f);
         writeByte(moveByte);
     }
 
