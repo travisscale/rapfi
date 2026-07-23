@@ -382,7 +382,7 @@ bool SearchEngine::tryTrivialBestmove(SearchThread &main)
     }
     // If we are winning, return directly
     else if (main.board->p4Count(main.board->sideToMove(), A_FIVE)) {
-        assert(main.board->cell(main.rootMoves[0].pv[0]).pattern4[main.board->sideToMove()]
+        assert(main.board->pattern4(main.rootMoves[0].pv[0], main.board->sideToMove())
                == A_FIVE);
         main.rootMoves[0].value = mate_in(1);
         ctx.bestMove            = main.rootMoves[0].pv[0];

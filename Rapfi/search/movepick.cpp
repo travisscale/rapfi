@@ -174,14 +174,14 @@ MovePicker::MovePicker(Rule rule, const Board &board, ExtraArgs<MovePicker::MAIN
 
     if (board.p4Count(oppo, A_FIVE)) {
         stage    = DEFENDFIVE_TT;
-        ttmValid = board.cell(args.ttMove).pattern4[oppo] == A_FIVE;
+        ttmValid = board.pattern4(args.ttMove, oppo) == A_FIVE;
     }
     else if (board.p4Count(oppo, B_FLEX4)) {
         stage = DEFENDFOUR_TT;
 
-        const Cell &ttCell = board.cell(args.ttMove);
-        ttmValid           = ttCell.pattern4[BLACK] >= E_BLOCK4 || ttCell.pattern4[BLACK] == FORBID
-                   || ttCell.pattern4[WHITE] >= E_BLOCK4;
+        ttmValid = board.pattern4(args.ttMove, BLACK) >= E_BLOCK4
+                   || board.pattern4(args.ttMove, BLACK) == FORBID
+                   || board.pattern4(args.ttMove, WHITE) >= E_BLOCK4;
     }
     else if (board.p4Count(oppo, C_BLOCK4_FLEX3)
              && (rule != Rule::RENJU || validateOpponentCMove(board))) {
@@ -218,11 +218,11 @@ MovePicker::MovePicker(Rule rule, const Board &board, ExtraArgs<MovePicker::QVCF
 
     if (board.p4Count(oppo, A_FIVE)) {
         stage    = DEFENDFIVE_TT;
-        ttmValid = board.cell(args.ttMove).pattern4[oppo] == A_FIVE;
+        ttmValid = board.pattern4(args.ttMove, oppo) == A_FIVE;
     }
     else {
         stage    = QVCF_TT;
-        ttmValid = board.cell(args.ttMove).pattern4[self] >= E_BLOCK4;
+        ttmValid = board.pattern4(args.ttMove, self) >= E_BLOCK4;
     }
 
     // check legality for defence ttmove
@@ -287,23 +287,33 @@ void MovePicker::scoreAllMoves()
     }
 
     for (auto &m : *this) {
-        const Cell &c = board.cell(m);
-
         if (bool(Type & POLICY) && evaluator) {
             m.score = m.rawScore = policyBuf->score(m.pos);
             maxPolicyScore       = std::max(maxPolicyScore, m.rawScore);
         }
-        else if constexpr (bool(Type & BALANCED))
-            m.score = m.rawScore = c.score[self];
-        else if constexpr (bool(Type & ATTACK))
-            m.score = m.rawScore = (c.score[self] * 2 + c.score[oppo]) / 3;
-        else if constexpr (bool(Type & DEFEND))
-            m.score = m.rawScore = (c.score[self] + c.score[oppo] * 2) / 3;
-        else
-            assert(false && "incorrect score type");
+        else {
+            // Scores are no longer cached on the cell: recompute from the pattern codes.
+            // Same P4SCORES entries move() reads, so values are identical to the old cache.
+            Pattern4Score p4ScoreBlack =
+                Evaluation::getP4Score(rule, BLACK, board.pcode<BLACK>(m.pos));
+            Pattern4Score p4ScoreWhite =
+                Evaluation::getP4Score(rule, WHITE, board.pcode<WHITE>(m.pos));
+            Score scores[SIDE_NB] = {
+                Score(p4ScoreBlack.scoreSelf() + p4ScoreWhite.scoreOppo()),
+                Score(p4ScoreWhite.scoreSelf() + p4ScoreBlack.scoreOppo()),
+            };
+            if constexpr (bool(Type & BALANCED))
+                m.score = m.rawScore = scores[self];
+            else if constexpr (bool(Type & ATTACK))
+                m.score = m.rawScore = (scores[self] * 2 + scores[oppo]) / 3;
+            else if constexpr (bool(Type & DEFEND))
+                m.score = m.rawScore = (scores[self] + scores[oppo] * 2) / 3;
+            else
+                assert(false && "incorrect score type");
+        }
 
         if (bool(Type & MAIN_HISTORY) && mainHistory) {
-            if (c.pattern4[self] >= H_FLEX3)
+            if (board.pattern4(m.pos, self) >= H_FLEX3)
                 m.score += (*mainHistory)[self][m.pos][HIST_ATTACK] / 128;
             else
                 m.score += (*mainHistory)[self][m.pos][HIST_QUIET] / 256;
@@ -315,7 +325,7 @@ void MovePicker::scoreAllMoves()
                 auto [counterMove, counterMoveP4] =
                     (*counterMoveHistory)[oppo][lastMove.moveIndex()].get();
 
-                if (counterMove == m.pos && counterMoveP4 <= c.pattern4[self])
+                if (counterMove == m.pos && counterMoveP4 <= board.pattern4(m.pos, self))
                     m.score += CounterMoveBonus;
             }
         }

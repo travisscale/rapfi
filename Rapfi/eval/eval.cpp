@@ -187,9 +187,8 @@ EvalInfo::EvalInfo(const Board &board, Rule rule)
 
         FOR_EVERY_EMPTY_POS(&b, pos)
         {
-            const Cell &c = b.cell(pos);
-            info.pcodeCount[BLACK][c.pcode<BLACK>()]++;
-            info.pcodeCount[WHITE][c.pcode<WHITE>()]++;
+            info.pcodeCount[BLACK][b.pcode<BLACK>(pos)]++;
+            info.pcodeCount[WHITE][b.pcode<WHITE>(pos)]++;
         }
     }
 

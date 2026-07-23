@@ -23,8 +23,8 @@
 
 #include <cassert>
 
-/// Packs the line patterns of both colors for one cell into a single byte (4 bits each), so a
-/// `Cell` can store all four directions compactly.
+/// Packs the line patterns of both colors for one cell into a single byte (4 bits each), so the
+/// board's per-cell pattern array can store all four directions in 4 bytes.
 struct Pattern2x
 {
     Pattern patBlack : 4;  ///< Line pattern seen from black's perspective.

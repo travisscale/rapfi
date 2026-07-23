@@ -54,7 +54,7 @@ void HistoryTracker::updateBestmoveStats(Depth depth, Pos bestMove, Value bestVa
     Color    self = board.sideToMove(), oppo = ~self;
     bool     oppo5  = board.p4Count(oppo, A_FIVE);
     bool     oppo4  = oppo5 || board.p4Count(oppo, B_FLEX4);
-    Pattern4 selfP4 = board.cell(bestMove).pattern4[self];
+    Pattern4 selfP4 = board.pattern4(bestMove, self);
     int      bonus  = statBonus(depth);
 
     if (selfP4 >= H_FLEX3) {
@@ -89,7 +89,7 @@ void HistoryTracker::updateTTMoveStats(Depth depth, Pos ttMove, Value ttValue, V
     Color    self = board.sideToMove(), oppo = ~self;
     bool     oppo5  = board.p4Count(oppo, A_FIVE);
     bool     oppo4  = oppo5 || board.p4Count(oppo, B_FLEX4);
-    Pattern4 selfP4 = board.cell(ttMove).pattern4[self];
+    Pattern4 selfP4 = board.pattern4(ttMove, self);
     int      bonus  = statBonus(depth);
 
     if (!oppo4 && selfP4 < H_FLEX3) {

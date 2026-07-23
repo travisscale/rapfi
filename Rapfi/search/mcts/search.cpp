@@ -146,8 +146,8 @@ Value vcfsearch(Board &board, SearchStack *ss, int ply, Value alpha, Value beta,
 
     while (Pos move = mp()) {
         assert(board.isLegal(move));
-        ss[ply].moveP4[BLACK] = board.cell(move).pattern4[BLACK];
-        ss[ply].moveP4[WHITE] = board.cell(move).pattern4[WHITE];
+        ss[ply].moveP4[BLACK] = board.pattern4(move, BLACK);
+        ss[ply].moveP4[WHITE] = board.pattern4(move, WHITE);
 
         // Make and search the move
         board.move<Rule, Board::MoveType::NO_EVAL>(move);
@@ -207,7 +207,7 @@ Value vcfdefend(Board &board, SearchStack *ss, int ply, Value alpha, Value beta,
 
     // Search the only defence move
     Pos move = board.stateInfo().lastPattern4(oppo, A_FIVE);
-    assert(board.cell(move).pattern4[oppo] == A_FIVE);
+    assert(board.pattern4(move, oppo) == A_FIVE);
 
     Value value;
     if (options.rule == Rule::RENJU && self == BLACK && board.checkForbiddenPoint(move)) {
@@ -215,8 +215,8 @@ Value vcfdefend(Board &board, SearchStack *ss, int ply, Value alpha, Value beta,
         value = mated_in(board.ply() + 2);
     }
     else {
-        ss[ply].moveP4[BLACK] = board.cell(move).pattern4[BLACK];
-        ss[ply].moveP4[WHITE] = board.cell(move).pattern4[WHITE];
+        ss[ply].moveP4[BLACK] = board.pattern4(move, BLACK);
+        ss[ply].moveP4[WHITE] = board.pattern4(move, WHITE);
 
         board.move<Rule, Board::MoveType::NO_EVAL>(move);
         TT.prefetch(board.zobristKey());

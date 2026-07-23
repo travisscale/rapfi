@@ -89,8 +89,8 @@ struct Bitboard
     }
 
     /// A candidate range (the neighbour offsets around a played stone) recast as one dx-bitmask per
-    /// board row (index `dy + 4`, bit `dx + 4`), so applyStencil() can OR the whole neighbourhood
-    /// in as a few word-wide ops. Each stencil row fits within a single bitboard word.
+    /// board row (index `dy + 4`, bit `dx + 4`), so forEachStencilWord() can OR the whole
+    /// neighbourhood in as a few word-wide ops. Each stencil row fits within a single bitboard word.
     struct Stencil
     {
         uint32_t row[9];
@@ -113,17 +113,20 @@ struct Bitboard
         }
     };
 
-    /// OR the stencil's candidate neighbourhood, centred at `center`, into this bitboard.
-    void applyStencil(const Stencil &stencil, Pos center)
+    /// Compute the stencil's candidate neighbourhood, centred at `center`, and hand each
+    /// affected (wordIdx, bits) pair to `apply` — the caller owns the OR (and journaling).
+    /// Bit placement is identical to the former in-place applyStencil.
+    template <typename ApplyFn>
+    static void forEachStencilWord(const Stencil &stencil, Pos center, ApplyFn &&apply)
     {
         const int cx = center.x() + BOARD_BOUNDARY;
         const int ry = center.y() + BOARD_BOUNDARY;
         for (int k = 0; k < 9; k++) {
-            uint64_t rowBits = stencil.row[k];
+            uint32_t rowBits = stencil.row[k];
             if (!rowBits)
                 continue;
             int r = ry + k - 4;  // board row; r >> 1 selects the word, (r & 1) its half
-            words[r >> 1] |= rowBits << ((r & 1) * FULL_BOARD_SIZE + cx - 4);
+            apply(r >> 1, uint64_t(rowBits) << ((r & 1) * FULL_BOARD_SIZE + cx - 4));
         }
     }
 

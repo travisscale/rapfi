@@ -624,38 +624,37 @@ private:
             Color                self = board.sideToMove(), oppo = ~self;
             FOR_EVERY_POSITION(&board, pos)
             {
-                int         posIdx   = pos.y() * board.size() + pos.x();
-                const Cell &c        = board.cell(pos);
+                int posIdx           = pos.y() * board.size() + pos.x();
                 inBoardPlane[posIdx] = true;
-                selfPlane[posIdx]    = c.piece == self;
-                oppoPlane[posIdx]    = c.piece == oppo;
+                selfPlane[posIdx]    = board.get(pos) == self;
+                oppoPlane[posIdx]    = board.get(pos) == oppo;
 
                 if constexpr (WriteSparseInputs) {
                     // Write sparseInputNCHWU8 and sparseInputNCHWU16
                     sparseInputNCHWU8[i * sparseInputNCHWU8Stride + 0 * numCells + posIdx] =
-                        c.pattern(self, 0);
+                        board.pattern(pos, self, 0);
                     sparseInputNCHWU8[i * sparseInputNCHWU8Stride + 1 * numCells + posIdx] =
-                        c.pattern(self, 1);
+                        board.pattern(pos, self, 1);
                     sparseInputNCHWU8[i * sparseInputNCHWU8Stride + 2 * numCells + posIdx] =
-                        c.pattern(self, 2);
+                        board.pattern(pos, self, 2);
                     sparseInputNCHWU8[i * sparseInputNCHWU8Stride + 3 * numCells + posIdx] =
-                        c.pattern(self, 3);
+                        board.pattern(pos, self, 3);
                     sparseInputNCHWU8[i * sparseInputNCHWU8Stride + 4 * numCells + posIdx] =
-                        c.pattern(oppo, 0);
+                        board.pattern(pos, oppo, 0);
                     sparseInputNCHWU8[i * sparseInputNCHWU8Stride + 5 * numCells + posIdx] =
-                        c.pattern(oppo, 1);
+                        board.pattern(pos, oppo, 1);
                     sparseInputNCHWU8[i * sparseInputNCHWU8Stride + 6 * numCells + posIdx] =
-                        c.pattern(oppo, 2);
+                        board.pattern(pos, oppo, 2);
                     sparseInputNCHWU8[i * sparseInputNCHWU8Stride + 7 * numCells + posIdx] =
-                        c.pattern(oppo, 3);
+                        board.pattern(pos, oppo, 3);
                     sparseInputNCHWU8[i * sparseInputNCHWU8Stride + 8 * numCells + posIdx] =
-                        c.pattern4[self];
+                        board.pattern4(pos, self);
                     sparseInputNCHWU8[i * sparseInputNCHWU8Stride + 9 * numCells + posIdx] =
-                        c.pattern4[oppo];
+                        board.pattern4(pos, oppo);
                     sparseInputNCHWU16[i * sparseInputNCHWU16Stride + 0 * numCells + posIdx] =
-                        self == BLACK ? c.pcode<BLACK>() : c.pcode<WHITE>();
+                        self == BLACK ? board.pcode<BLACK>(pos) : board.pcode<WHITE>(pos);
                     sparseInputNCHWU16[i * sparseInputNCHWU16Stride + 1 * numCells + posIdx] =
-                        oppo == BLACK ? c.pcode<BLACK>() : c.pcode<WHITE>();
+                        oppo == BLACK ? board.pcode<BLACK>(pos) : board.pcode<WHITE>(pos);
                 }
 
                 // Write policyTargetsNCMove

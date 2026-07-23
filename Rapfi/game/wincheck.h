@@ -74,14 +74,14 @@ inline Value quickWinCheck(const Board &board, int ply, Value beta = VALUE_INFIN
             // opponent's forced block-five reply also defends the follow-up flex three.
             FOR_EVERY_CAND_POS(&board, pos)
             {
-                if (board.cell(pos).pattern4[self] != C_BLOCK4_FLEX3)
+                if (board.pattern4(pos, self) != C_BLOCK4_FLEX3)
                     continue;
 
                 bool hasDefend, isFakeCMove;
                 {
                     ScopedMove<R> probe(board, pos);
                     Pos           defendMove = board.stateInfo().lastPattern4(self, A_FIVE);
-                    Pattern4      defendP4   = board.cell(defendMove).pattern4[oppo];
+                    Pattern4      defendP4   = board.pattern4(defendMove, oppo);
                     hasDefend                = defendP4 >= E_BLOCK4
                                 || R == Rule::RENJU && defendP4 == FORBID
                                        && !board.checkForbiddenPoint(defendMove);

@@ -38,8 +38,7 @@ constexpr int MaxFindDist = 4;
 template <GenType Type>
 inline bool basicPatternFilter(const Board &board, Pos pos, Color side)
 {
-    const Cell &c  = board.cell(pos);
-    Pattern4    p4 = c.pattern4[side];
+    Pattern4 p4 = board.pattern4(pos, side);
 
     if constexpr (bool(Type & WINNING)) {
         if (p4 >= B_FLEX4)
@@ -56,8 +55,9 @@ inline bool basicPatternFilter(const Board &board, Pos pos, Color side)
         else if constexpr ((Type & RULE_RENJU) == RULE_RENJU) {
             if (p4 >= E_BLOCK4
                 || p4 == FORBID
-                       && (c.pattern(side, 0) >= B4 || c.pattern(side, 1) >= B4
-                           || c.pattern(side, 2) >= B4 || c.pattern(side, 3) >= B4))
+                       && (board.pattern(pos, side, 0) >= B4 || board.pattern(pos, side, 1) >= B4
+                           || board.pattern(pos, side, 2) >= B4
+                           || board.pattern(pos, side, 3) >= B4))
                 return true;
         }
         else {
@@ -122,7 +122,7 @@ Pos findFirstPattern4Pos(const Board &board, Color side, Pattern4 p4)
 {
     FOR_EVERY_CAND_POS(&board, pos)
     {
-        if (board.cell(pos).pattern4[side] == p4)
+        if (board.pattern4(pos, side) == p4)
             return pos;
     }
 
@@ -135,9 +135,8 @@ Pos findFirstPattern4Pos(const Board &board, Color side, Pattern4 p4)
 /// @note p4 must be one of [C_BLOCK4_FLEX3, B_FLEX4, A_FIVE] (the values lastPattern4 tracks).
 Pos findPattern4Pos(const Board &board, Color side, Pattern4 p4)
 {
-    Pos         pos  = board.stateInfo().lastPattern4(side, p4);
-    const Cell &cell = board.cell(pos);
-    if (cell.piece == EMPTY && cell.pattern4[side] == p4)
+    Pos pos = board.stateInfo().lastPattern4(side, p4);
+    if (board.get(pos) == EMPTY && board.pattern4(pos, side) == p4)
         return pos;
     return findFirstPattern4Pos(board, side, p4);
 }
@@ -148,17 +147,17 @@ ScoredMove *findAllPseudoFourDefendPos(const Board &board, Color side, ScoredMov
 {
     FOR_EVERY_CAND_POS(&board, pos)
     {
-        const Cell &c = board.cell(pos);
+        Pattern4 p4 = board.pattern4(pos, side);
 
-        if (c.pattern4[side] >= E_BLOCK4)
+        if (p4 >= E_BLOCK4)
             *moveList++ = pos;
-        else if (c.pattern4[side] == FORBID) {
+        else if (p4 == FORBID) {
             assert(side == BLACK);
 
             for (int dir = 0; dir < 4; dir++) {
                 // Check if this pos is a B4 + (B4/F4), but recognized as FORBID in Renju.
                 // If true, this is still a defend four pos for white.
-                if (c.pattern(BLACK, dir) >= B4) {
+                if (board.pattern(pos, BLACK, dir) >= B4) {
                     *moveList++ = pos;
                     break;
                 }
@@ -184,8 +183,7 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
 
     // Find all defend pos for F3 attack line pattern (_*OOO*_, X*OOO**X, _*O*OO*_, _O*O*O*O_)
     auto findF3LineDefence = [=, &board](Pos f4Pos, int dir, ScoredMove *const list) {
-        const Cell &f4Cell = board.cell(f4Pos);
-        assert(f4Cell.pattern(oppo, dir) == F4);
+        assert(board.pattern(f4Pos, oppo, dir) == F4);
 
         list[0] = f4Pos;  // Add first defence
 
@@ -193,12 +191,12 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
         for (int i = 0; i < MaxFindDist; i++) {
             pos -= DIRECTION[dir];
 
-            if (const Cell &c = board.cell(pos); c.piece == oppo)
+            if (Color piece = board.get(pos); piece == oppo)
                 continue;
-            else if (c.piece == EMPTY) {
+            else if (piece == EMPTY) {
                 list[1] = pos;  // Second defence
-                if (c.pattern(oppo, dir) == F4
-                    && (c.pattern4[oppo] != FORBID || !board.checkForbiddenPoint(pos)))
+                if (board.pattern(pos, oppo, dir) == F4
+                    && (board.pattern4(pos, oppo) != FORBID || !board.checkForbiddenPoint(pos)))
                     return list + 2;
             }
             break;
@@ -207,11 +205,11 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
         for (int i = 0; i < MaxFindDist; i++) {
             pos += DIRECTION[dir];
 
-            if (const Cell &c = board.cell(pos); c.piece == oppo)
+            if (Color piece = board.get(pos); piece == oppo)
                 continue;
-            else if (c.piece == EMPTY) {
-                if (c.pattern(oppo, dir) == F4
-                    && (c.pattern4[oppo] != FORBID || !board.checkForbiddenPoint(pos))) {
+            else if (piece == EMPTY) {
+                if (board.pattern(pos, oppo, dir) == F4
+                    && (board.pattern4(pos, oppo) != FORBID || !board.checkForbiddenPoint(pos))) {
                     list[1] = pos;  // Second defence
                     return list + 2;
                 }
@@ -226,8 +224,7 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
 
     // Find all defend pos for double B3 attack line pattern (XOOO**_ + XOOO**_)
     auto findB3Defence = [=, &board](Pos f4Pos, int dir, ScoredMove *list) {
-        const Cell &f4Cell = board.cell(f4Pos);
-        assert(f4Cell.pattern(oppo, dir) == B4 || f4Cell.pattern(oppo, dir) == B4S);
+        assert(board.pattern(f4Pos, oppo, dir) == B4 || board.pattern(f4Pos, oppo, dir) == B4S);
 
         *list++ = f4Pos;
 
@@ -237,9 +234,9 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
             for (i = 0; i < MaxFindDist; i++) {
                 pos -= DIRECTION[dir];
 
-                if (const Cell &c = board.cell(pos); c.piece == oppo)
+                if (Color piece = board.get(pos); piece == oppo)
                     continue;
-                else if (c.piece == EMPTY && c.pattern(oppo, dir) >= B4)
+                else if (piece == EMPTY && board.pattern(pos, oppo, dir) >= B4)
                     *list++ = pos;
                 break;
             }
@@ -247,9 +244,9 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
             for (j = MaxFindDist - i; j > 0; j--) {
                 pos += DIRECTION[dir];
 
-                if (const Cell &c = board.cell(pos); c.piece == oppo)
+                if (Color piece = board.get(pos); piece == oppo)
                     continue;
-                else if (c.piece == EMPTY && c.pattern(oppo, dir) >= B4)
+                else if (piece == EMPTY && board.pattern(pos, oppo, dir) >= B4)
                     *list++ = pos;
                 break;
             }
@@ -261,14 +258,12 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
     // Try to find the last opponent attack move that caused flex4 pattern,
     // then its pos can be used to find the resulted flex4 moves.
     if (Pos lastFlex4AttackPos = board.stateInfo().lastFlex4AttackMove[oppo]) {
-        const Cell &attackCell = board.cell(lastFlex4AttackPos);
-
         // If a pattern in any direction is F3(F3S), then last four is cause
         // by at least one F3. Find all F3 defend moves in every directions.
         for (int dir = 0; dir < 4; dir++) {
-            // Cell's pattern is not updated after stone is placed there,
-            // so we can look up the pattern before placement
-            Pattern lastMovePattern = attackCell.pattern(oppo, dir);
+            // A cell's pattern is not updated after a stone is placed there (frozen at its
+            // placement-time value), so we can look up the pattern before placement.
+            Pattern lastMovePattern = board.pattern(lastFlex4AttackPos, oppo, dir);
             if (lastMovePattern != F3 && lastMovePattern != F3S)
                 continue;
 
@@ -276,10 +271,11 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
             for (int i = 0; i < MaxFindDist; i++) {
                 pos -= DIRECTION[dir];
 
-                if (const Cell &c = board.cell(pos); c.piece == oppo)
+                if (Color piece = board.get(pos); piece == oppo)
                     continue;
-                else if (c.piece == EMPTY) {
-                    if (c.pattern(oppo, dir) == F4 && c.pattern4[oppo] == B_FLEX4) {
+                else if (piece == EMPTY) {
+                    if (board.pattern(pos, oppo, dir) == F4
+                        && board.pattern4(pos, oppo) == B_FLEX4) {
                         // If there has already a F3 line, the second F3 line
                         // means double F3 pattern which can not be defended.
                         if (!IncludeLosingMoves && last > moveList)
@@ -296,10 +292,11 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
             for (int i = 0; i < MaxFindDist; i++) {
                 pos += DIRECTION[dir];
 
-                if (const Cell &c = board.cell(pos); c.piece == oppo)
+                if (Color piece = board.get(pos); piece == oppo)
                     continue;
-                else if (c.piece == EMPTY) {
-                    if (c.pattern(oppo, dir) == F4 && c.pattern4[oppo] == B_FLEX4) {
+                else if (piece == EMPTY) {
+                    if (board.pattern(pos, oppo, dir) == F4
+                        && board.pattern4(pos, oppo) == B_FLEX4) {
                         // If there has already a F3 line, the second F3 line
                         // means double F3 pattern which can not be defended.
                         if (!IncludeLosingMoves && last > moveList)
@@ -323,7 +320,7 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
         // If patterns in all directions are not F3, then the B_FLEX4 must
         // be formed by double B3 (in two direction or one direction).
         for (int dir = 0; dir < 4; dir++) {
-            Pattern attackPattern = attackCell.pattern(oppo, dir);
+            Pattern attackPattern = board.pattern(lastFlex4AttackPos, oppo, dir);
             if (attackPattern != B3 && attackPattern != B3S)
                 continue;
 
@@ -332,11 +329,11 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
             for (i = 0, empty = 0; i < MaxFindDist; i++) {
                 pos -= DIRECTION[dir];
 
-                if (const Cell &c = board.cell(pos); c.piece == oppo)
+                if (Color piece = board.get(pos); piece == oppo)
                     continue;
-                else if (c.piece == EMPTY) {
-                    if (c.pattern4[oppo] >= B_FLEX4) {
-                        Pattern pattern = c.pattern(oppo, dir);
+                else if (piece == EMPTY) {
+                    if (board.pattern4(pos, oppo) >= B_FLEX4) {
+                        Pattern pattern = board.pattern(pos, oppo, dir);
                         if (pattern == F4)
                             return findF3LineDefence(pos, dir, last);
                         else if (pattern == B4 || pattern == B4S)
@@ -352,11 +349,11 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
             for (j = MaxFindDist - i; j > 0; j--) {
                 pos += DIRECTION[dir];
 
-                if (const Cell &c = board.cell(pos); c.piece == oppo)
+                if (Color piece = board.get(pos); piece == oppo)
                     continue;
-                else if (c.piece == EMPTY) {
-                    if (c.pattern4[oppo] >= B_FLEX4) {
-                        Pattern pattern = c.pattern(oppo, dir);
+                else if (piece == EMPTY) {
+                    if (board.pattern4(pos, oppo) >= B_FLEX4) {
+                        Pattern pattern = board.pattern(pos, oppo, dir);
                         if (pattern == F4)
                             return findF3LineDefence(pos, dir, last);
                         else if (pattern == B4 || pattern == B4S)
@@ -388,8 +385,7 @@ ScoredMove *findB4F3Defence(const Board &board, ScoredMove *const moveList)
 
     // Find all valid defence move for a F3 line through a LUT
     auto findF3LineDefence = [=, &board](Pos f3Pos, int dir, ScoredMove *list) {
-        assert(board.cell(f3Pos).pattern(oppo, dir) == F3
-               || board.cell(f3Pos).pattern(oppo, dir) == F3S);
+        assert(board.pattern(f3Pos, oppo, dir) == F3 || board.pattern(f3Pos, oppo, dir) == F3S);
 
         uint64_t key         = board.getKeyAt<R>(f3Pos, dir);
         uint32_t defenceMask = PatternConfig::lookupDefenceTable<R>(key, oppo);
@@ -461,16 +457,16 @@ ScoredMove *findB4F3Defence(const Board &board, ScoredMove *const moveList)
 
     auto findB4InLine = [=, &board](Pos b4Pos, int dir) {
         // F4 in Renju is judged as OL, but it should be a valid defence
-        auto checkRenjuF4 = [dir, &board](const Cell &c, Pos pos) {
+        auto checkRenjuF4 = [dir, &board](Pos pos) {
             auto      lineKey = board.getKeyAt<Rule::STANDARD>(pos, dir);
             Pattern2x pattern = PatternConfig::lookupPattern<Rule::STANDARD>(lineKey);
             return pattern.patBlack >= B4;
         };
         // Detect overline B4 (which is not a valid B4 point) in Standard/Renju
-        auto checkNotOverlineB4 = [b4Pos, oppo, dir, &board](const Cell &c, Pos pos) {
+        auto checkNotOverlineB4 = [b4Pos, oppo, dir, &board](Pos pos) {
             ScopedSwitchSide                        side(board, oppo);
             ScopedMove<R, Board::MoveType::NO_EVAL> probe(board, pos);
-            return board.cell(b4Pos).pattern(oppo, dir) == F5;
+            return board.pattern(b4Pos, oppo, dir) == F5;
         };
 
         // A block four has a single five-completing square. Scan backward first: if the nearest
@@ -483,12 +479,13 @@ ScoredMove *findB4F3Defence(const Board &board, ScoredMove *const moveList)
         for (i = 0; i < MaxFindDist; i++) {
             pos -= DIRECTION[dir];
 
-            if (const Cell &c = board.cell(pos); c.piece == oppo)
+            if (Color piece = board.get(pos); piece == oppo)
                 continue;
-            else if (c.piece == EMPTY
-                     && (c.pattern(oppo, dir) == B4 || c.pattern(oppo, dir) == B4S
-                         || R == RENJU && c.pattern4[oppo] == FORBID && checkRenjuF4(c, pos))) {
-                if (R == FREESTYLE || checkNotOverlineB4(c, pos))
+            else if (piece == EMPTY
+                     && (board.pattern(pos, oppo, dir) == B4 || board.pattern(pos, oppo, dir) == B4S
+                         || R == RENJU && board.pattern4(pos, oppo) == FORBID
+                                && checkRenjuF4(pos))) {
+                if (R == FREESTYLE || checkNotOverlineB4(pos))
                     return pos;
             }
             break;
@@ -497,11 +494,11 @@ ScoredMove *findB4F3Defence(const Board &board, ScoredMove *const moveList)
         for (j = MaxFindDist - i; j > 0; j--) {
             pos += DIRECTION[dir];
 
-            if (const Cell &c = board.cell(pos); c.piece == oppo)
+            if (Color piece = board.get(pos); piece == oppo)
                 continue;
-            else if (c.piece == EMPTY
-                     && (c.pattern(oppo, dir) == B4 || c.pattern(oppo, dir) == B4S
-                         || R == RENJU && c.pattern4[oppo] == FORBID && checkRenjuF4(c, pos)))
+            else if (piece == EMPTY
+                     && (board.pattern(pos, oppo, dir) == B4 || board.pattern(pos, oppo, dir) == B4S
+                         || R == RENJU && board.pattern4(pos, oppo) == FORBID && checkRenjuF4(pos)))
                 return pos;
             break;
         }
@@ -513,15 +510,16 @@ ScoredMove *findB4F3Defence(const Board &board, ScoredMove *const moveList)
     auto findAllB3CounterDefence = [=, &board](Pos b4Pos, int dir, ScoredMove *list) {
         Color      self = ~oppo;
         const bool isPseudoForbiddenB4 =
-            R == RENJU && self == BLACK && board.cell(b4Pos).pattern4[self] == FORBID;
+            R == RENJU && self == BLACK && board.pattern4(b4Pos, self) == FORBID;
 
         Pos pos = b4Pos;
         for (int i = 0; i < MaxFindDist; i++) {
             pos -= DIRECTION[dir];
 
-            if (const Cell &c = board.cell(pos); c.piece == self)
+            if (Color piece = board.get(pos); piece == self)
                 continue;
-            else if (c.piece == EMPTY && (isPseudoForbiddenB4 || c.pattern(self, dir) >= B3)) {
+            else if (piece == EMPTY
+                     && (isPseudoForbiddenB4 || board.pattern(pos, self, dir) >= B3)) {
                 *list++ = pos;
                 continue;
             }
@@ -531,9 +529,10 @@ ScoredMove *findB4F3Defence(const Board &board, ScoredMove *const moveList)
         for (int i = 0; i < MaxFindDist; i++) {
             pos += DIRECTION[dir];
 
-            if (const Cell &c = board.cell(pos); c.piece == self)
+            if (Color piece = board.get(pos); piece == self)
                 continue;
-            else if (c.piece == EMPTY && (isPseudoForbiddenB4 || c.pattern(self, dir) >= B3)) {
+            else if (piece == EMPTY
+                     && (isPseudoForbiddenB4 || board.pattern(pos, self, dir) >= B3)) {
                 *list++ = pos;
                 continue;
             }
@@ -544,17 +543,16 @@ ScoredMove *findB4F3Defence(const Board &board, ScoredMove *const moveList)
     };
 
     // Get opponent B4F3 pos from the last memorized C-type move (rescans if the marker is stale).
-    Pos         B4F3Pos  = findPattern4Pos(board, oppo, C_BLOCK4_FLEX3);
-    const Cell &B4F3Cell = board.cell(B4F3Pos);
-    assert(B4F3Cell.piece == EMPTY);
-    assert(B4F3Cell.pattern4[oppo] == C_BLOCK4_FLEX3);
+    Pos B4F3Pos = findPattern4Pos(board, oppo, C_BLOCK4_FLEX3);
+    assert(board.get(B4F3Pos) == EMPTY);
+    assert(board.pattern4(B4F3Pos, oppo) == C_BLOCK4_FLEX3);
 
     ScoredMove *last = moveList;
     *last++          = B4F3Pos;
 
     // Iterate all directions to find F3 pattern line and B4 pattern line.
     for (int dir = 0; dir < 4; dir++) {
-        Pattern pattern = B4F3Cell.pattern(oppo, dir);
+        Pattern pattern = board.pattern(B4F3Pos, oppo, dir);
         if (pattern == F3 || pattern == F3S)
             last = findF3LineDefence(B4F3Pos, dir, last);
         else if (pattern == B4 || pattern == B4S) {
@@ -562,7 +560,7 @@ ScoredMove *findB4F3Defence(const Board &board, ScoredMove *const moveList)
 
             // If we have a B4 counter defence move, then direct defence
             // to the opponent move is unnecessary.
-            if (board.cell(b4Pos).pattern4[~oppo] >= E_BLOCK4)
+            if (board.pattern4(b4Pos, ~oppo) >= E_BLOCK4)
                 return moveList;
 
             *last++ = b4Pos;
@@ -592,11 +590,11 @@ ScoredMove *generateFourDefence(const Board &board, ScoredMove *moveList)
 
     return std::remove_if(moveList, last, [&](ScoredMove move) {
         assert(board.isEmpty(move));
-        assert(board.cell(move).pattern4[~board.sideToMove()] >= E_BLOCK4
-               || board.cell(move).pattern4[~board.sideToMove()] == FORBID);
+        assert(board.pattern4(move, ~board.sideToMove()) >= E_BLOCK4
+               || board.pattern4(move, ~board.sideToMove()) == FORBID);
 
         // only adds non-vcf moves
-        return board.cell(move).pattern4[board.sideToMove()] >= E_BLOCK4;
+        return board.pattern4(move, board.sideToMove()) >= E_BLOCK4;
     });
 }
 
@@ -619,7 +617,7 @@ ScoredMove *generateB4F3Defence(const Board &board, ScoredMove *moveList)
 
     return std::remove_if(moveList, last, [&](ScoredMove move) {
         assert(board.isEmpty(move));
-        return board.cell(move).pattern4[board.sideToMove()] >= E_BLOCK4;
+        return board.pattern4(move, board.sideToMove()) >= E_BLOCK4;
     });
 }
 
@@ -708,15 +706,14 @@ ScoredMove *generate<DEFEND_FIVE>(const Board &board, ScoredMove *moveList)
     assert(board.p4Count(oppo, A_FIVE) > 0);
 
     // Get last opponent A_FIVE directly from state info.
-    *moveList     = board.stateInfo().lastPattern4(oppo, A_FIVE);
-    const Cell &c = board.cell(*moveList);
-    if (LIKELY(c.piece == EMPTY && c.pattern4[oppo] == A_FIVE))
+    *moveList = board.stateInfo().lastPattern4(oppo, A_FIVE);
+    if (LIKELY(board.get(*moveList) == EMPTY && board.pattern4(*moveList, oppo) == A_FIVE))
         return moveList + 1;
 
     // In case of weird history, we find the A_FIVE pos by iterating all move candidates.
     FOR_EVERY_CAND_POS(&board, pos)
     {
-        if (board.cell(pos).pattern4[oppo] == A_FIVE) {
+        if (board.pattern4(pos, oppo) == A_FIVE) {
             *moveList = pos;
             return moveList + 1;
         }

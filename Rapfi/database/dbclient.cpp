@@ -363,7 +363,7 @@ DBKey constructDBKey(const Board &board, Rule rule, TransformType *transType)
         if (move == Pos::PASS)
             continue;
 
-        Color c = board.cell(move).piece;
+        Color c = board.get(move);
         if (c == BLACK)
             key.stones[key.numBlackStones++] = {move.x(), move.y()};
         else if (c == WHITE)

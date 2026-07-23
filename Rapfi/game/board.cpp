@@ -48,8 +48,8 @@ bool checkP4(const Board *board)
     int p4[SIDE_NB][PATTERN4_NB] = {0};
     FOR_EVERY_EMPTY_POS(board, pos)
     {
-        p4[BLACK][board->cell(pos).pattern4[BLACK]]++;
-        p4[WHITE][board->cell(pos).pattern4[WHITE]]++;
+        p4[BLACK][board->pattern4(pos, BLACK)]++;
+        p4[WHITE][board->pattern4(pos, WHITE)]++;
     }
     for (Color c : {BLACK, WHITE})
         for (Pattern4 i = FORBID; i < PATTERN4_NB; i = Pattern4(i + 1)) {
@@ -80,6 +80,8 @@ Board::Board(int boardSize, CandidateRange candRange)
     // at-most-boardCellCount stone moves.
     stateInfos  = std::make_unique<StateInfo[]>(1 + boardCellCount * 2);
     updateCache = std::make_unique<UpdateCache[]>(1 + boardCellCount * 2);
+    candJournal = std::make_unique<CandJournalEntry[]>(CAND_JOURNAL_CAPACITY);
+    journalTop  = 0;
 
     // Set candidate range of the board. FULL_BOARD yields a null table (every empty cell is a
     // candidate, seeded once in newGame).
@@ -104,7 +106,8 @@ Board::Board(const Board &other, Search::SearchThread *thread)
     , thisThread_(thread)
 {
     candStencil.build(candidateRange, candidateRangeSize);
-    std::copy_n(other.cells, FULL_BOARD_CELL_COUNT, cells);
+    std::copy_n(&other.pattern2xs[0][0], FULL_BOARD_CELL_COUNT * 4, &pattern2xs[0][0]);
+    std::copy_n(other.pattern4x2, FULL_BOARD_CELL_COUNT, pattern4x2);
     std::copy_n(other.bitKey0, arraySize(bitKey0), bitKey0);
     std::copy_n(other.bitKey1, arraySize(bitKey1), bitKey1);
     std::copy_n(other.bitKey2, arraySize(bitKey2), bitKey2);
@@ -118,6 +121,11 @@ Board::Board(const Board &other, Search::SearchThread *thread)
     std::copy_n(other.stateInfos.get(), 1 + moveCount, stateInfos.get());
     std::copy_n(other.updateCache.get(), 1 + moveCount, updateCache.get());
 
+    candJournal  = std::make_unique<CandJournalEntry[]>(CAND_JOURNAL_CAPACITY);
+    candidatesBB = other.candidatesBB;
+    journalTop   = other.journalTop;
+    std::copy_n(other.candJournal.get(), other.journalTop, candJournal.get());
+
     // Sync evaluator state with board state
     if (evaluator_)
         evaluator_->syncWithBoard(*this);
@@ -126,15 +134,19 @@ Board::Board(const Board &other, Search::SearchThread *thread)
 template <Rule R>
 void Board::newGame()
 {
-    // Reset to an empty board, then compute every empty cell's patterns/scores from scratch once;
-    // all later positions are reached incrementally through move()/undo().
-    std::fill_n(cells, FULL_BOARD_CELL_COUNT, Cell {});
+    // Reset to an empty board, then compute every empty cell's patterns from scratch once;
+    // all later positions are reached incrementally through move()/undo(). Wall cells' array
+    // entries stay zero forever — required for the pre-legality frozen reads.
+    std::memset(pattern2xs, 0, sizeof(pattern2xs));
+    std::memset(pattern4x2, 0, sizeof(pattern4x2));
     std::fill_n(bitKey0, arraySize(bitKey0), 0);
     std::fill_n(bitKey1, arraySize(bitKey1), 0);
     std::fill_n(bitKey2, arraySize(bitKey2), 0);
     std::fill_n(bitKey3, arraySize(bitKey3), 0);
     onBoardBB.zero();
     emptyBB.zero();
+    candidatesBB.zero();
+    journalTop = 0;
 
     // Init board state to empty
     moveCount         = 0;
@@ -143,39 +155,38 @@ void Board::newGame()
     currentSide       = BLACK;
     currentZobristKey = Hash::zobrist[BLACK][FULL_BOARD_CELL_COUNT - 1];
     for (Pos i = Pos::FULL_BOARD_START; i < Pos::FULL_BOARD_END; i++) {
-        cells[i].piece = i.isInBoard(boardSize, boardSize) ? EMPTY : WALL;
+        if (!i.isInBoard(boardSize, boardSize))
+            continue;
 
         // Seed empty cells with both color bits set (encoding 11); walls keep 00. Placing a stone
         // later toggles one bit, leaving the opposite color's bit set (black 10, white 01).
-        if (cells[i].piece == EMPTY) {
-            setBitKey(i, BLACK);
-            setBitKey(i, WHITE);
-            onBoardBB.set(i);
-            emptyBB.set(i);
-        }
+        setBitKey(i, BLACK);
+        setBitKey(i, WHITE);
+        onBoardBB.set(i);
+        emptyBB.set(i);
     }
 
-    // Init state info of the first ply with rule R
+    // Init state info of the first ply with rule R (the memset zeroes journalStart too,
+    // matching journalTop == 0 above)
     StateInfo &st = stateInfos[moveCount];
     std::memset(&st, 0, sizeof(StateInfo));
 
     Value valueBlack = VALUE_ZERO;
     FOR_EVERY_POSITION(this, pos)
     {
-        Cell &c = cells[pos];
-
+        Pattern2x *p2x = pattern2xs[pos];
         for (int dir = 0; dir < 4; dir++) {
-            c.pattern2x[dir] = PatternConfig::lookupPattern<R>(getKeyAt<R>(pos, dir));
-
-            assert(c.pattern2x[dir].patBlack <= F1);
-            assert(c.pattern2x[dir].patWhite <= F1);
+            p2x[dir] = PatternConfig::lookupPattern<R>(getKeyAt<R>(pos, dir));
+            assert(p2x[dir].patBlack <= F1 && p2x[dir].patWhite <= F1);
         }
 
-        PatternCode pcode[SIDE_NB] = {c.pcode<BLACK>(), c.pcode<WHITE>()};
-        c.updatePattern4AndScore<R>(pcode[BLACK], pcode[WHITE]);
-        st.p4Count[BLACK][c.pattern4[BLACK]]++;
-        st.p4Count[WHITE][c.pattern4[WHITE]]++;
-        valueBlack += c.valueBlack = Evaluation::getValueBlack(R, pcode[BLACK], pcode[WHITE]);
+        PatternCode pcodeBlack = pcode<BLACK>(pos), pcodeWhite = pcode<WHITE>(pos);
+        Pattern4    p4Black    = (Pattern4)Evaluation::getP4Score(R, BLACK, pcodeBlack);
+        Pattern4    p4White    = (Pattern4)Evaluation::getP4Score(R, WHITE, pcodeWhite);
+        pattern4x2[pos]        = uint8_t(p4Black) | uint8_t(p4White) << 4;
+        st.p4Count[BLACK][p4Black]++;
+        st.p4Count[WHITE][p4White]++;
+        valueBlack += Evaluation::getValueBlack(R, pcodeBlack, pcodeWhite);
     }
     st.valueBlack = valueBlack;
     st.candArea   = CandArea();
@@ -202,9 +213,10 @@ void Board::move(Pos pos)
     if (UNLIKELY(pos == Pos::PASS)) {
         assert(passMoveCount() < cellCount());
 
-        StateInfo &st = stateInfos[++moveCount];
-        st            = stateInfos[moveCount - 1];
-        st.lastMove   = Pos::PASS;
+        StateInfo &st   = stateInfos[++moveCount];
+        st              = stateInfos[moveCount - 1];
+        st.lastMove     = Pos::PASS;
+        st.journalStart = journalTop;  // overwrite the copied anchor: this ply owns new entries
 
         passCount[currentSide]++;
         currentSide = ~currentSide;
@@ -226,9 +238,9 @@ void Board::move(Pos pos)
     StateInfo   &st = stateInfos[++moveCount];
     st              = stateInfos[moveCount - 1];
     st.lastMove     = pos;
+    st.journalStart = journalTop;  // overwrite the copied anchor: this ply owns new entries
     st.candArea.expand(pos, boardSize, candAreaExpandDist);
 
-    cells[pos].piece = currentSide;
     currentZobristKey ^= Hash::zobrist[currentSide][pos];
     flipBitKey(pos, currentSide);
     emptyBB.clear(pos);
@@ -254,44 +266,59 @@ void Board::move(Pos pos)
 
     for (int i = -L; i <= L; i += 1 + (i == -1)) {
         for (int dir = 0; dir < 4; dir++) {
-            Pos   posi = pos + DIRECTION[dir] * i;
-            Cell &c    = cells[posi];
-            if (c.piece != EMPTY)
+            Pos posi = pos + DIRECTION[dir] * i;
+            // Current cell's 2-bit occupancy code sits at bit offset 2L of the pre-rotated
+            // window; 0b11 = empty. Replaces the per-cell piece load.
+            // Debug cross-check (keep through stage 6): register test must agree with emptyBB.
+            assert((((bitKey[dir] >> (2 * L)) & 0b11) == 0b11) == emptyBB.test(posi));
+            if (((bitKey[dir] >> (2 * L)) & 0b11) != 0b11)
                 continue;
 
-            if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
-                deltaValueBlack -= c.valueBlack;
-            }
+            Pattern2x *p2x    = pattern2xs[posi];
+            uint8_t    p4Pair = pattern4x2[posi];
 
-            c.pattern2x[dir] = PatternConfig::lookupPattern<R>(bitKey[dir]);
-
-            // Save the cell's pre-update pattern4/score/value so undo() can restore it verbatim.
-            pc[updateCacheIdx].pattern4[BLACK] = c.pattern4[BLACK];
-            pc[updateCacheIdx].pattern4[WHITE] = c.pattern4[WHITE];
-            pc[updateCacheIdx].score[BLACK]    = c.score[BLACK];
-            pc[updateCacheIdx].score[WHITE]    = c.score[WHITE];
-            if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
-                pc[updateCacheIdx].valueBlack = c.valueBlack;
-            }
+            // Save the cell's pre-update line pattern and pattern4 pair so undo() can
+            // restore them verbatim (captured before any write to the cell).
+            pc[updateCacheIdx].pattern2x    = p2x[dir];
+            pc[updateCacheIdx].pattern4Pair = p4Pair;
             updateCacheIdx++;
 
-            PatternCode pcode[SIDE_NB] = {c.pcode<BLACK>(), c.pcode<WHITE>()};
+            // PCODE is order-independent, so index it with the changed direction last:
+            // the three unchanged directions give one base row per color, and the old and
+            // new pcode are two loads from that same 16-entry row.
+            const int          d1 = (dir + 1) & 3, d2 = (dir + 2) & 3, d3 = (dir + 3) & 3;
+            const PatternCode *rowBlack =
+                PatternConfig::PCODE[p2x[d1].patBlack][p2x[d2].patBlack][p2x[d3].patBlack];
+            const PatternCode *rowWhite =
+                PatternConfig::PCODE[p2x[d1].patWhite][p2x[d2].patWhite][p2x[d3].patWhite];
+            const Pattern oldBlack = p2x[dir].patBlack;
+            const Pattern oldWhite = p2x[dir].patWhite;
+
+            p2x[dir] = PatternConfig::lookupPattern<R>(bitKey[dir]);
+
+            PatternCode pcodeBlack = rowBlack[p2x[dir].patBlack];
+            PatternCode pcodeWhite = rowWhite[p2x[dir].patWhite];
 
             if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
-                deltaValueBlack += c.valueBlack =
-                    Evaluation::getValueBlack(R, pcode[BLACK], pcode[WHITE]);
+                // The old value is no longer cached on the cell: rebuild it from the old
+                // pcodes (same-row loads) so the incremental sum stays bit-identical.
+                deltaValueBlack +=
+                    Evaluation::getValueBlack(R, pcodeBlack, pcodeWhite)
+                    - Evaluation::getValueBlack(R, rowBlack[oldBlack], rowWhite[oldWhite]);
             }
 
-            st.p4Count[BLACK][c.pattern4[BLACK]]--;
-            st.p4Count[WHITE][c.pattern4[WHITE]]--;
-            c.updatePattern4AndScore<R>(pcode[BLACK], pcode[WHITE]);
-            st.p4Count[BLACK][c.pattern4[BLACK]]++;
-            st.p4Count[WHITE][c.pattern4[WHITE]]++;
+            Pattern4 p4Black = (Pattern4)Evaluation::getP4Score(R, BLACK, pcodeBlack);
+            Pattern4 p4White = (Pattern4)Evaluation::getP4Score(R, WHITE, pcodeWhite);
+            st.p4Count[BLACK][p4Pair & 0xF]--;
+            st.p4Count[WHITE][p4Pair >> 4]--;
+            st.p4Count[BLACK][p4Black]++;
+            st.p4Count[WHITE][p4White]++;
+            pattern4x2[posi] = uint8_t(p4Black) | uint8_t(p4White) << 4;
 
-            if (c.pattern4[BLACK] >= C_BLOCK4_FLEX3)
-                st.lastPattern4Move[BLACK][c.pattern4[BLACK] - C_BLOCK4_FLEX3] = posi;
-            if (c.pattern4[WHITE] >= C_BLOCK4_FLEX3)
-                st.lastPattern4Move[WHITE][c.pattern4[WHITE] - C_BLOCK4_FLEX3] = posi;
+            if (p4Black >= C_BLOCK4_FLEX3)
+                st.lastPattern4Move[BLACK][p4Black - C_BLOCK4_FLEX3] = posi;
+            if (p4White >= C_BLOCK4_FLEX3)
+                st.lastPattern4Move[WHITE][p4White - C_BLOCK4_FLEX3] = posi;
         }
 
         const int shamt = 2 + 2 * (i == -1);
@@ -302,13 +329,14 @@ void Board::move(Pos pos)
     }
 
     // The placed cell is no longer empty: drop its own (now stale) value and p4 contributions
-    // that were folded in above.
-    const Cell &c = cell(pos);
-    if (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
-        st.valueBlack += deltaValueBlack - c.valueBlack;
+    // that were folded in above. Its pattern2x entries are frozen at their valid empty-cell
+    // state (the walk skips i == 0), so the stale value is rebuilt from its pcodes.
+    if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
+        st.valueBlack += deltaValueBlack
+                         - Evaluation::getValueBlack(R, pcode<BLACK>(pos), pcode<WHITE>(pos));
     }
-    st.p4Count[BLACK][c.pattern4[BLACK]]--;
-    st.p4Count[WHITE][c.pattern4[WHITE]]--;
+    st.p4Count[BLACK][pattern4x2[pos] & 0xF]--;
+    st.p4Count[WHITE][pattern4x2[pos] >> 4]--;
 
     if (MT != MoveType::NO_EVAL_MULTI)
         currentSide = ~currentSide;
@@ -316,8 +344,11 @@ void Board::move(Pos pos)
     assert(checkP4(this));
     assert(updateCacheIdx <= std::tuple_size_v<UpdateCache>);
 
-    // Mark the new stone's candidate neighborhood in the snapshotted candidate bitboard.
-    st.candidates.applyStencil(candStencil, pos);
+    // Mark the new stone's candidate neighborhood in the board-level candidate bitboard,
+    // journaling the 0->1 transitions so undo() can rewind them.
+    Bitboard::forEachStencilWord(candStencil, pos, [this](int w, uint64_t bits) {
+        setCandidateBits(w, bits);
+    });
 
     // If this move is what first created a flex four for a side, remember it as that side's
     // flex-four attack move (used by the four-defence move generator).
@@ -344,6 +375,16 @@ void Board::undo()
     assert(moveCount > 0);
     Pos lastPos = getLastMove();
 
+    // Rewind this ply's candidate-bit transitions (XOR clears exactly the bits that went
+    // 0->1 at this ply; disjointness makes order irrelevant). Passes need this too:
+    // expandCandArea may have appended entries on a pass ply.
+    {
+        const StateInfo &dying = stateInfos[moveCount];
+        for (uint32_t j = journalTop; j-- > dying.journalStart;)
+            candidatesBB.words[candJournal[j].wordIdx] ^= candJournal[j].delta;
+        journalTop = dying.journalStart;
+    }
+
     // Undoing a pass just restores the side to move and pass counter.
     if (UNLIKELY(lastPos == Pos::PASS)) {
         currentSide = ~currentSide;
@@ -367,55 +408,33 @@ void Board::undo()
 
     flipBitKey(lastPos, currentSide);
     currentZobristKey ^= Hash::zobrist[currentSide][lastPos];
-    cells[lastPos].piece = EMPTY;
     emptyBB.set(lastPos);
 
     moveCount--;
     const UpdateCache &pc             = updateCache[moveCount];
     int                updateCacheIdx = 0;
 
-    // Mirror move()'s line walk over the same cells in the same order, but restore each cell's
-    // pattern4/score/value from the saved UpdateCache instead of recomputing them. The recomputed
-    // line pattern (pattern2x) is the one piece that must still be derived from the bitkey.
-    constexpr int L         = PatternConfig::HalfLineLen<R>;
-    int           x         = lastPos.x() + BOARD_BOUNDARY;
-    int           y         = lastPos.y() + BOARD_BOUNDARY;
-    uint64_t      bitKey[4] = {
-        rotr(bitKey0[y], 2 * (x - 2 * L)),
-        rotr(bitKey1[x], 2 * (y - 2 * L)),
-        rotr(bitKey2[x + y], 2 * (x - 2 * L)),
-        rotr(bitKey3[FULL_BOARD_SIZE - 1 - x + y], 2 * (x - 2 * L)),
-    };
-
+    // Mirror move()'s line walk over the same cells in the same order, restoring each cell's
+    // changed-direction line pattern and pattern4 pair straight from the saved UpdateCache —
+    // no bitkey window or table lookup needed. Occupancy is unchanged between move() and here
+    // (the stone was removed above), so emptyBB selects exactly the same cell set.
+    constexpr int L = PatternConfig::HalfLineLen<R>;
     for (int i = -L; i <= L; i += 1 + (i == -1)) {
         for (int dir = 0; dir < 4; dir++) {
-            Pos   posi = lastPos + DIRECTION[dir] * i;
-            Cell &c    = cells[posi];
-            if (c.piece != EMPTY)
+            Pos posi = lastPos + DIRECTION[dir] * i;
+            if (!emptyBB.test(posi))
                 continue;
 
-            c.pattern2x[dir]  = PatternConfig::lookupPattern<R>(bitKey[dir]);
-            c.pattern4[BLACK] = pc[updateCacheIdx].pattern4[BLACK];
-            c.pattern4[WHITE] = pc[updateCacheIdx].pattern4[WHITE];
-            c.score[BLACK]    = pc[updateCacheIdx].score[BLACK];
-            c.score[WHITE]    = pc[updateCacheIdx].score[WHITE];
-            if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
-                c.valueBlack = pc[updateCacheIdx].valueBlack;
-            }
+            pattern2xs[posi][dir] = pc[updateCacheIdx].pattern2x;
+            pattern4x2[posi]      = pc[updateCacheIdx].pattern4Pair;
             updateCacheIdx++;
         }
-
-        const int shamt = 2 + 2 * (i == -1);
-        bitKey[0] >>= shamt;
-        bitKey[1] >>= shamt;
-        bitKey[2] >>= shamt;
-        bitKey[3] >>= shamt;
     }
 
     assert(checkP4(this));
     assert(updateCacheIdx <= std::tuple_size_v<UpdateCache>);
-
-    // The candidate bitboard rewinds for free: it lives in the popped StateInfo (moveCount--).
+    // Journal round-trip invariant: the rewind above restored the dying ply's anchor.
+    assert(journalTop == stateInfos[moveCount + 1].journalStart);
 
     // after undo evaluator update
     if (MT == MoveType::NORMAL && evaluator_)
@@ -436,25 +455,26 @@ bool Board::checkForbiddenPoint(Pos pos) const
     // one three can only be completed via another forbidden point is not actually forbidden), so
     // overline and double-four are confirmed directly from the line patterns while double-three is
     // verified by placing the stone and counting threes that lead to a genuine win.
-    const Cell &fpCell = cell(pos);
-    if (fpCell.pattern4[BLACK] != FORBID)
+    if (pattern4(pos, BLACK) != FORBID)
         return false;
 
     int winByFour = 0;
     for (int dir = 0; dir < 4; dir++) {
+        Pattern p = pattern(pos, BLACK, dir);
         // If this forbidden point is a Overline, it must be a true forbidden point.
-        if (fpCell.pattern2x[dir].patBlack == OL)
+        if (p == OL)
             return true;
         // Otherwise if it has at least two Four(B4/F4), it must be a true forbidden point.
-        else if (fpCell.pattern2x[dir].patBlack == B4 || fpCell.pattern2x[dir].patBlack == B4S
-                 || fpCell.pattern2x[dir].patBlack == F4) {
+        else if (p == B4 || p == B4S || p == F4) {
             if (++winByFour >= 2)
                 return true;
         }
     }
 
     // Check the remaining false-forbidden cases by placing black at pos and recursing. The guards
-    // restore the side to move and undo the stone on every exit path of this function.
+    // restore the side to move and undo the stone on every exit path of this function. Reads of
+    // the probe cell after the ScopedMove return its frozen placement-time patterns (the freeze
+    // invariant), which is exactly the pre-placement state this check needs.
     ScopedSwitchSide                                        asBlack(*this, BLACK);
     ScopedMove<Rule::RENJU, Board::MoveType::NO_EVAL_MULTI> probe(*this, pos);
 
@@ -463,7 +483,7 @@ bool Board::checkForbiddenPoint(Pos pos) const
 
     for (int dir = 0; dir < 4; dir++) {
         // Only look line that is possible to become a FLEX4 or FIVE
-        Pattern p = fpCell.pattern2x[dir].patBlack;
+        Pattern p = pattern(pos, BLACK, dir);
 
         // double three forbidden type
         if (p != F3 && p != F3S)  // p must be one of F3, F3S
@@ -473,32 +493,32 @@ bool Board::checkForbiddenPoint(Pos pos) const
         for (int i = 0; i < MaxFindDist; i++) {
             posi -= DIRECTION[dir];
 
-            if (const Cell &c = cell(posi); c.piece == EMPTY) {
-                if (c.pattern4[BLACK] == B_FLEX4 || c.pattern(BLACK, dir) == F5
-                    || c.pattern4[BLACK] == FORBID && c.pattern(BLACK, dir) == F4
+            if (Color piece = get(posi); piece == EMPTY) {
+                if (pattern4(posi, BLACK) == B_FLEX4 || pattern(posi, BLACK, dir) == F5
+                    || pattern4(posi, BLACK) == FORBID && pattern(posi, BLACK, dir) == F4
                            && !checkForbiddenPoint(posi)) {
                     winByThree++;
                     goto next_direction;
                 }
                 break;
             }
-            else if (c.piece != BLACK)
+            else if (piece != BLACK)
                 break;
         }
         posi = pos;
         for (int i = 0; i < MaxFindDist; i++) {
             posi += DIRECTION[dir];
 
-            if (const Cell &c = cell(posi); c.piece == EMPTY) {
-                if (c.pattern4[BLACK] == B_FLEX4 || c.pattern(BLACK, dir) == F5
-                    || c.pattern4[BLACK] == FORBID && c.pattern(BLACK, dir) == F4
+            if (Color piece = get(posi); piece == EMPTY) {
+                if (pattern4(posi, BLACK) == B_FLEX4 || pattern(posi, BLACK, dir) == F5
+                    || pattern4(posi, BLACK) == FORBID && pattern(posi, BLACK, dir) == F4
                            && !checkForbiddenPoint(posi)) {
                     winByThree++;
                     goto next_direction;
                 }
                 break;
             }
-            else if (c.piece != BLACK)
+            else if (piece != BLACK)
                 break;
         }
 
@@ -508,6 +528,14 @@ bool Board::checkForbiddenPoint(Pos pos) const
     }
 
     return winByThree >= 2;
+}
+
+Score Board::score(Rule rule, Pos pos, Color side) const
+{
+    Pattern4Score p4ScoreBlack = Evaluation::getP4Score(rule, BLACK, pcode<BLACK>(pos));
+    Pattern4Score p4ScoreWhite = Evaluation::getP4Score(rule, WHITE, pcode<WHITE>(pos));
+    return side == BLACK ? p4ScoreBlack.scoreSelf() + p4ScoreWhite.scoreOppo()
+                         : p4ScoreWhite.scoreSelf() + p4ScoreBlack.scoreOppo();
 }
 
 Pos Board::getLastActualMoveOfSide(Color side) const
@@ -536,7 +564,7 @@ void Board::expandCandArea(Pos pos, int fillDist, int lineDist)
 
     auto markCandidate = [&](Pos p) {
         if (p >= 0 && p < FULL_BOARD_CELL_COUNT && isEmpty(p))
-            st.candidates.set(p);
+            setCandidateBits(p >> 6, uint64_t(1) << (p & 63));
     };
 
     for (int i = std::max(3, fillDist + 1); i <= lineDist; i++) {
@@ -562,7 +590,7 @@ std::string Board::positionString() const
     return ss.str();
 }
 
-std::string Board::trace() const
+std::string Board::trace(Rule rule) const
 {
     std::stringstream ss;
     const StateInfo  &st = stateInfo();
@@ -617,7 +645,7 @@ std::string Board::trace() const
     ss << "----------Pattern4----Black----------\n";
     printBoard([&](Pos pos) {
         if (isEmpty(pos))
-            ss << cell(pos).pattern4[BLACK];
+            ss << pattern4(pos, BLACK);
         else
             ss << '.';
     });
@@ -625,7 +653,7 @@ std::string Board::trace() const
     ss << "----------Pattern4----White----------\n";
     printBoard([&](Pos pos) {
         if (isEmpty(pos))
-            ss << cell(pos).pattern4[WHITE];
+            ss << pattern4(pos, WHITE);
         else
             ss << '.';
     });
@@ -634,7 +662,7 @@ std::string Board::trace() const
     printBoard(
         [&](Pos pos) {
             if (isEmpty(pos))
-                ss << std::setw(3) << cell(pos).score[BLACK];
+                ss << std::setw(3) << score(rule, pos, BLACK);
             else {
                 ss << '[';
                 printPiece(pos);
@@ -647,7 +675,7 @@ std::string Board::trace() const
     printBoard(
         [&](Pos pos) {
             if (isEmpty(pos))
-                ss << std::setw(3) << cell(pos).score[WHITE];
+                ss << std::setw(3) << score(rule, pos, WHITE);
             else {
                 ss << '[';
                 printPiece(pos);

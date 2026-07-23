@@ -696,7 +696,7 @@ void traceBoard()
     Search::Engine.ctx.options = options;
     Search::Engine.main()->setBoardAndEvaluator(*board);
 
-    std::string traceInfo  = Search::Engine.main()->board->trace();
+    std::string traceInfo  = Search::Engine.main()->board->trace(options.rule);
     auto        traceLines = split(traceInfo, "\n");
     for (const auto &line : traceLines) {
         MESSAGEL(line);

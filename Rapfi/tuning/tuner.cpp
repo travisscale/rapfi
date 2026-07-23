@@ -130,12 +130,11 @@ void collectMoveScoreCoeffs(Rule r, const Board &board, Collector collect)
     // Collect scores of all candidate moves
     FOR_EVERY_EMPTY_CAND_POS(&board, pos)
     {
-        const Cell &c = board.cell(pos);
         collect(pos,
                 1,
                 1,
-                &Evaluation::P4SCORES[Evaluation::tableIndex(r, self)][c.pcode<BLACK>()],
-                &Evaluation::P4SCORES[Evaluation::tableIndex(r, oppo)][c.pcode<WHITE>()]);
+                &Evaluation::P4SCORES[Evaluation::tableIndex(r, self)][board.pcode<BLACK>(pos)],
+                &Evaluation::P4SCORES[Evaluation::tableIndex(r, oppo)][board.pcode<WHITE>(pos)]);
     }
 }
 

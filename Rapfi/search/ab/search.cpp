@@ -1261,8 +1261,8 @@ moves_loop:
 
         // Initialize heruistic information
         ss->moveCount     = ++moveCount;
-        ss->moveP4[BLACK] = board.cell(move).pattern4[BLACK];
-        ss->moveP4[WHITE] = board.cell(move).pattern4[WHITE];
+        ss->moveP4[BLACK] = board.pattern4(move, BLACK);
+        ss->moveP4[WHITE] = board.pattern4(move, WHITE);
 
         const MoveTraits mt = classifyMove<Rule>(ss, move, self, oppo);
 
@@ -1732,8 +1732,8 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
 
         ss->currentMove   = move;
         ss->moveCount     = ++moveCount;
-        ss->moveP4[BLACK] = board.cell(move).pattern4[BLACK];
-        ss->moveP4[WHITE] = board.cell(move).pattern4[WHITE];
+        ss->moveP4[BLACK] = board.pattern4(move, BLACK);
+        ss->moveP4[WHITE] = board.pattern4(move, WHITE);
         if (PvNode)
             (ss + 1)->pv[0] = Pos::NONE;
 
@@ -1822,7 +1822,7 @@ Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
 
     // Step 3. Search the only defence move
     Pos move = board.stateInfo().lastPattern4(oppo, A_FIVE);
-    assert(board.cell(move).pattern4[oppo] == A_FIVE);
+    assert(board.pattern4(move, oppo) == A_FIVE);
 
     // For renju, if black's defence move is a forbidden point, black loses in two steps.
     if (Rule == Rule::RENJU && self == BLACK && board.checkForbiddenPoint(move)) {
@@ -1831,8 +1831,8 @@ Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     else {
         ss->currentMove   = move;
         ss->moveCount     = 1;
-        ss->moveP4[BLACK] = board.cell(move).pattern4[BLACK];
-        ss->moveP4[WHITE] = board.cell(move).pattern4[WHITE];
+        ss->moveP4[BLACK] = board.pattern4(move, BLACK);
+        ss->moveP4[WHITE] = board.pattern4(move, WHITE);
         if (PvNode)
             (ss + 1)->pv[0] = Pos::NONE;
 
