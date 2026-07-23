@@ -21,10 +21,15 @@
 #include "../core/pos.h"
 #include "../core/types.h"
 #include "tunecorpus.h"
+#include "tunestore.h"
 
 #include <BS_thread_pool.hpp>
+#include <filesystem>
 #include <functional>
+#include <memory>
+#include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 class Board;
@@ -50,11 +55,12 @@ using ParamSetter = std::function<void(AddrType, size_t, TuneParam)>;
 /// to its base index in the tuneParams array.
 struct ParamsSyncRecord
 {
-    size_t   baseIndex;
-    size_t   numElems;
-    uint32_t elemSize;
-    uint32_t paramPerElem;
-    void    *address;
+    std::string layoutTag;
+    size_t      baseIndex;
+    size_t      numElems;
+    uint32_t    elemSize;
+    uint32_t    paramPerElem;
+    void       *address;
 
     ParamGetter<> getter;
     ParamSetter<> setter;
@@ -68,22 +74,30 @@ struct TuningConfig
     // --------------------------------------------
     // General training settings
 
-    size_t   batchSize           = 8192;
-    size_t   maxTuneEntries      = UINT32_MAX;
-    size_t   numThreads          = 0;
-    uint64_t seed                = 1;
-    double   learningRate        = 0.01;
-    double   weightDecay         = 0.0;
-    double   moveScoreLossGamma  = 0.0;
-    double   moveScoreScale      = 24.0;
-    double   moveScoreBias       = 24.0;
-    Score    moveScoreMin        = -999;
-    Score    moveScoreMax        = 999;
-    LossType lossType            = LossType::BCE;
-    bool     shuffleTuneEntries  = false;
-    bool     tuneEval            = true;
-    bool     tuneMoveScore       = false;
-    bool     randomMoveScoreInit = false;
+    size_t                             batchSize      = 8192;
+    size_t                             maxTuneEntries = UINT32_MAX;
+    size_t                             numThreads     = 0;
+    uint64_t                           seed           = 1;
+    size_t                             memoryLimitMB  = 0;
+    size_t                             shardSizeMB    = 64;
+    std::filesystem::path              preparedCachePath;
+    std::vector<std::filesystem::path> trainDatasetPaths;
+    std::vector<std::filesystem::path> validationDatasetPaths;
+    std::string                        trainDatasetFormat;
+    std::string                        validationDatasetFormat;
+    bool                               rebuildPreparedCache = false;
+    double                             learningRate         = 0.01;
+    double                             weightDecay          = 0.0;
+    double                             moveScoreLossGamma   = 0.0;
+    double                             moveScoreScale       = 24.0;
+    double                             moveScoreBias        = 24.0;
+    Score                              moveScoreMin         = -999;
+    Score                              moveScoreMax         = 999;
+    LossType                           lossType             = LossType::BCE;
+    bool                               shuffleTuneEntries   = false;
+    bool                               tuneEval             = true;
+    bool                               tuneMoveScore        = false;
+    bool                               randomMoveScoreInit  = false;
 
     // --------------------------------------------
     // Data entry filter settings
@@ -130,18 +144,26 @@ public:
 private:
     static constexpr size_t LogicalPartitions = 64;
 
-    const TuningConfig            config;
-    PreparedCorpus                trainTuneEntries, valTuneEntries;
-    std::vector<uint32_t>         trainSampleOrder;
-    std::vector<TuneParam>        tuneParams;
-    std::vector<ParamsSyncRecord> syncRecords;
+    const TuningConfig                config;
+    PreparedCorpus                    trainTuneEntries, valTuneEntries;
+    std::unique_ptr<FileBackedCorpus> trainFileCorpus, valFileCorpus;
+    std::vector<uint32_t>             trainSampleOrder;
+    std::vector<TuneParam>            tuneParams;
+    std::vector<ParamsSyncRecord>     syncRecords;
     struct ParameterAddress
     {
         ParameterId baseIndex;
         uint32_t    parameterCount;
     };
     std::unordered_map<const void *, ParameterAddress> paramIndices;
-    std::vector<std::vector<TuneGradient>> partitionGradients;
+    std::vector<std::vector<TuneGradient>>             partitionGradients;
+    size_t                                             fileWorkerBudgetBytes = 0;
+    size_t                                             fileJobBudgetBytes    = 0;
+    size_t                                             fileShardBudgetBytes  = 0;
+    size_t                                             fileShardTargetBytes  = 0;
+    size_t                                             fileRecordLimitBytes  = 0;
+    size_t                                             fileChunkEntryLimit   = 0;
+    size_t                                             fileMaxPendingJobs    = 0;
     /// Worker pool for dataset transformation and loss/gradient computation.
     /// mutable: the const loss-computation methods submit tasks through it.
     mutable BS::thread_pool threadPool;
@@ -152,46 +174,66 @@ private:
         std::vector<PolicyCandidate> policyCandidates;
     };
 
-    void  initParams();
-    void  initTuneEntries(PreparedCorpus &tuneEntries,
-                          class Dataset  &dataset,
-                          bool            buildShuffleOrder);
-    void  appendTuneSample(PreparedCorpus &tuneEntries,
-                           const Board    &board,
-                           Rule            rule,
-                           uint8_t         resultTimesTwo,
-                           Pos             bestMove,
-                           CompileScratch &scratch) const;
-    Float searchOptimalInvScalingFactor() const;
+    void             initParams();
+    PreparedCacheKey makePreparedCacheKey(const std::vector<std::filesystem::path> &sourcePaths,
+                                          const std::string                        &datasetFormat,
+                                          const char                               *role) const;
+    void             initTuneEntries(PreparedCorpus   &tuneEntries,
+                                     FileBackedCorpus *fileCorpus,
+                                     class Dataset    &dataset,
+                                     bool              buildShuffleOrder);
+    void             appendTuneSample(PreparedCorpus &tuneEntries,
+                                      const Board    &board,
+                                      Rule            rule,
+                                      uint8_t         resultTimesTwo,
+                                      Pos             bestMove,
+                                      CompileScratch &scratch) const;
+    Float            searchOptimalInvScalingFactor(bool useTunedEval) const;
+    template <bool UseTunedEval>
+    std::vector<Float> computeEvaluationLossGrid(const std::vector<Float> &candidates) const;
     template <bool UseTunedEval = true>
-    Float computeEvaluationLoss(Float K, bool validation) const;
-    Float computeMoveScoreLoss(bool validation) const;
-    void  computeGradientBatch(std::vector<TuneGradient> &grads, Float K, size_t batchIdx);
+    Float                   computeEvaluationLoss(Float K, bool validation) const;
+    Float                   computeMoveScoreLoss(bool validation) const;
+    std::pair<Float, Float> computeLosses(Float K, bool validation) const;
+    void                    computeGradientBatch(std::vector<TuneGradient>   &grads,
+                                                 Float                        K,
+                                                 const PreparedCorpus        &entries,
+                                                 size_t                       batchBegin,
+                                                 const std::vector<uint32_t> *sampleOrder);
 
-    void   addParams(void         *address,
-                     size_t        numElems,
-                     uint32_t      elemSize,
-                     uint32_t      paramPerElem,
-                     ParamGetter<> getter,
-                     ParamSetter<> setter);
+    void        addParams(std::string   layoutTag,
+                          void         *address,
+                          size_t        numElems,
+                          uint32_t      elemSize,
+                          uint32_t      paramPerElem,
+                          ParamGetter<> getter,
+                          ParamSetter<> setter);
     ParameterId paramIndex(const void *address, size_t offset = 0) const;
 
     /* helper functions to add typed params to synced tune params */
 
     template <typename T, size_t ParamPerElem = 1>
-    void addSingleParam(T &param, ParamGetter<const T &> getter, ParamSetter<T &> setter);
+    void addSingleParam(std::string            layoutTag,
+                        T                     &param,
+                        ParamGetter<const T &> getter,
+                        ParamSetter<T &>       setter);
     template <typename T, size_t Length, size_t ParamPerElem = 1>
-    void
-    addArrayParams(T (&paramArray)[Length], ParamGetter<const T &> getter, ParamSetter<T &> setter);
+    void addArrayParams(std::string layoutTag,
+                        T (&paramArray)[Length],
+                        ParamGetter<const T &> getter,
+                        ParamSetter<T &>       setter);
 };
 
 }  // namespace Tuning
 
 template <typename T, size_t ParamPerElem>
-inline void
-Tuning::Tuner::addSingleParam(T &param, ParamGetter<const T &> getter, ParamSetter<T &> setter)
+inline void Tuning::Tuner::addSingleParam(std::string            layoutTag,
+                                          T                     &param,
+                                          ParamGetter<const T &> getter,
+                                          ParamSetter<T &>       setter)
 {
     addParams(
+        std::move(layoutTag),
         &param,  // std::addressof() might be better
         1,
         sizeof(T),
@@ -205,11 +247,13 @@ Tuning::Tuner::addSingleParam(T &param, ParamGetter<const T &> getter, ParamSett
 }
 
 template <typename T, size_t Length, size_t ParamPerElem>
-inline void Tuning::Tuner::addArrayParams(T                      (&paramArray)[Length],
+inline void Tuning::Tuner::addArrayParams(std::string layoutTag,
+                                          T (&paramArray)[Length],
                                           ParamGetter<const T &> getter,
                                           ParamSetter<T &>       setter)
 {
     addParams(
+        std::move(layoutTag),
         paramArray,
         Length,
         sizeof(T),

@@ -113,7 +113,7 @@ bool readBinEntry(std::istream &is, DataEntry *entry, BinDecodeScratch &scratch)
     is.read(reinterpret_cast<char *>(&ehead), sizeof(BinEntryHead));
 
     // Check legality of the entry head
-    if (ehead.boardsize == 0)
+    if (ehead.boardsize < 5 || ehead.boardsize > MAX_BOARD_SIZE)
         throw DatasetError("wrong boardsize in dataset");
     Rule rule = decodeWireRule(ehead.rule);
     if (rule >= RULE_NB)
@@ -194,7 +194,11 @@ void writeBinEntry(std::ostream &os, const DataEntry &entry)
 
 // ------------------------------------------------------------------------
 
-bool readPackedGame(std::istream &is, GameEntry &game, PackedDecodeScratch &scratch)
+bool readPackedGame(std::istream        &is,
+                    GameEntry           &game,
+                    PackedDecodeScratch &scratch,
+                    size_t               maxRecordBytes,
+                    bool                 retainExtraPVs)
 {
     if (atRecordBoundaryEOF(is))
         return false;
@@ -212,6 +216,20 @@ bool readPackedGame(std::istream &is, GameEntry &game, PackedDecodeScratch &scra
         throw DatasetError("wrong result in dataset");
     if (ehead.totalPly > ehead.boardSize * ehead.boardSize)
         throw DatasetError("wrong ply in dataset");
+    if (ehead.initPly > ehead.totalPly || ehead.initPly >= MAX_MOVES)
+        throw DatasetError("wrong initial ply in dataset");
+
+    // Reserve credits before any variable-size record allocation. The factor
+    // of four covers geometric capacity, an old/new buffer pair during
+    // reallocation, and allocator slack while the raw and decoded forms coexist.
+    const uint64_t perWireMoveEnvelope = 4ULL
+                                         * (sizeof(PackedMove) + sizeof(GameEntry::MoveData)
+                                            + (retainExtraPVs ? sizeof(PVMove) : 0));
+    constexpr uint64_t FixedRecordEnvelope = sizeof(GameEntry) + 4ULL * MAX_MOVES * sizeof(Pos);
+    uint64_t recordEnvelope = FixedRecordEnvelope + uint64_t(ehead.moveCount) * perWireMoveEnvelope;
+    if (recordEnvelope > maxRecordBytes)
+        throw DatasetError("packed game allocation envelope exceeds the configured record limit ("
+                           + std::to_string(recordEnvelope) + " bytes required)");
 
     game.boardsize = ehead.boardSize;
     game.rule      = rule;
@@ -263,11 +281,13 @@ bool readPackedGame(std::istream &is, GameEntry &game, PackedDecodeScratch &scra
             // An extra multi-pv move of the current ply
             if (game.moveSequence.empty())
                 throw DatasetError("multipv move without a first move in dataset");
-            MovePayload &payload = game.moveSequence.back().payload;
-            if (auto *pvs = std::get_if<ExtraPVArray>(&payload))
-                pvs->push_back({pos, eval});
-            else
-                payload.emplace<ExtraPVArray>().push_back({pos, eval});
+            if (retainExtraPVs) {
+                MovePayload &payload = game.moveSequence.back().payload;
+                if (auto *pvs = std::get_if<ExtraPVArray>(&payload))
+                    pvs->push_back({pos, eval});
+                else
+                    payload.emplace<ExtraPVArray>().push_back({pos, eval});
+            }
         }
     }
 

@@ -221,6 +221,9 @@ set(MODULE_SOURCES
     tuning/numpywriter.cpp
     tuning/optimizer.cpp
     tuning/tunecorpus.cpp
+    tuning/tunedigest.cpp
+    tuning/tuneshard.cpp
+    tuning/tunestore.cpp
     tuning/tuner.cpp
 )
 

@@ -21,6 +21,7 @@
 #include "dataentry.h"
 #include "dataformat.h"
 
+#include <cstddef>
 #include <memory>
 #include <string>
 
@@ -55,6 +56,15 @@ public:
 
     /// Reset the read cursor to the beginning of the dataset.
     virtual void reset() = 0;
+
+    /// Sets a checked upper bound for the retained allocation envelope of one
+    /// decoded record. Readers without variable-size whole-game records may
+    /// ignore it. The default is unlimited.
+    virtual void setMaxRecordBytes(size_t) {}
+
+    /// Controls whether optional extra-PV payloads are materialized. Consumers
+    /// that only use the played move can disable them before reading games.
+    virtual void setRetainExtraPVs(bool) {}
 };
 
 /// SimpleBinaryDataset implements Dataset for binary format (.bin) in c-gomoku-cli.
@@ -132,6 +142,8 @@ public:
     bool supportsGames() const override { return true; }
     bool nextGame(GameEntry *game) override;
     void reset() override;
+    void setMaxRecordBytes(size_t bytes) override;
+    void setRetainExtraPVs(bool retain) override;
 
 private:
     class DataSource;

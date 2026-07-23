@@ -20,8 +20,10 @@
 
 #include "dataentry.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <iosfwd>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -101,7 +103,11 @@ struct PackedDecodeScratch
 {
     std::vector<char> buffer;  ///< Bulk read buffer for the move sequence.
 };
-bool readPackedGame(std::istream &is, GameEntry &game, PackedDecodeScratch &scratch);
+bool readPackedGame(std::istream        &is,
+                    GameEntry           &game,
+                    PackedDecodeScratch &scratch,
+                    size_t               maxRecordBytes = std::numeric_limits<size_t>::max(),
+                    bool                 retainExtraPVs = true);
 
 /// Encode and write one .binpack game record. Only extra-PV payloads are
 /// representable on the wire; dense policy payloads are silently dropped

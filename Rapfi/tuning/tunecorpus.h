@@ -51,24 +51,37 @@ public:
                 const std::vector<PolicyCandidate> &policyCandidates,
                 uint16_t                            bestCandidate);
     void append(PreparedCorpus &&other);
+    void appendRange(const PreparedCorpus &other, size_t begin, size_t count);
+    size_t
+    appendRangePeakCapacityBytes(const PreparedCorpus &other, size_t begin, size_t count) const;
+    void reserveAppendRange(const PreparedCorpus &other, size_t begin, size_t count);
 
-    const std::vector<uint8_t> &results() const { return results_; }
-    const std::vector<int16_t> &staticEvals() const { return staticEvals_; }
-    const std::vector<uint16_t> &bestCandidates() const { return bestCandidates_; }
-    const std::vector<uint32_t> &evalOffsets() const { return evalOffsets_; }
-    const std::vector<TuneCoeff> &evalTerms() const { return evalTerms_; }
-    const std::vector<uint32_t> &policyOffsets() const { return policyOffsets_; }
+    static PreparedCorpus fromSections(std::vector<uint8_t>         results,
+                                       std::vector<int16_t>         staticEvals,
+                                       std::vector<uint16_t>        bestCandidates,
+                                       std::vector<uint32_t>        evalOffsets,
+                                       std::vector<TuneCoeff>       evalTerms,
+                                       std::vector<uint32_t>        policyOffsets,
+                                       std::vector<PolicyCandidate> policyCandidates);
+
+    const std::vector<uint8_t>         &results() const { return results_; }
+    const std::vector<int16_t>         &staticEvals() const { return staticEvals_; }
+    const std::vector<uint16_t>        &bestCandidates() const { return bestCandidates_; }
+    const std::vector<uint32_t>        &evalOffsets() const { return evalOffsets_; }
+    const std::vector<TuneCoeff>       &evalTerms() const { return evalTerms_; }
+    const std::vector<uint32_t>        &policyOffsets() const { return policyOffsets_; }
     const std::vector<PolicyCandidate> &policyCandidates() const { return policyCandidates_; }
 
     size_t capacityBytes() const;
+    size_t storageBytes() const;
 
 private:
-    std::vector<uint8_t>  results_;
-    std::vector<int16_t>  staticEvals_;
-    std::vector<uint16_t> bestCandidates_;
-    std::vector<uint32_t> evalOffsets_;
-    std::vector<TuneCoeff> evalTerms_;
-    std::vector<uint32_t> policyOffsets_;
+    std::vector<uint8_t>         results_;
+    std::vector<int16_t>         staticEvals_;
+    std::vector<uint16_t>        bestCandidates_;
+    std::vector<uint32_t>        evalOffsets_;
+    std::vector<TuneCoeff>       evalTerms_;
+    std::vector<uint32_t>        policyOffsets_;
     std::vector<PolicyCandidate> policyCandidates_;
 };
 

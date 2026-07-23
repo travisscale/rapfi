@@ -92,8 +92,7 @@ namespace Tuning {
 
 SimpleBinaryDataset::SimpleBinaryDataset(const std::vector<std::string> &filenames)
     : dataStream(std::make_unique<MultiFileInputStream>(filenames))
-{
-}
+{}
 
 SimpleBinaryDataset::~SimpleBinaryDataset() {}
 
@@ -136,7 +135,7 @@ public:
         // If all moves of the current game are consumed, read the next game from the
         // current file (looping over games with an empty move sequence, if any).
         while (nextMoveIdx >= game.moveSequence.size()) {
-            if (!readPackedGame(stream.stream(), game, scratch))
+            if (!readPackedGame(stream.stream(), game, scratch, maxRecordBytes, retainExtraPVs))
                 return false;
             nextMoveIdx = 0;
         }
@@ -174,8 +173,11 @@ public:
     /// @return False when the current file has no more games, otherwise true.
     bool nextGameRecord(GameEntry &outGame)
     {
-        return readPackedGame(stream.stream(), outGame, scratch);
+        return readPackedGame(stream.stream(), outGame, scratch, maxRecordBytes, retainExtraPVs);
     }
+
+    void setMaxRecordBytes(size_t bytes) { maxRecordBytes = bytes; }
+    void setRetainExtraPVs(bool retain) { retainExtraPVs = retain; }
 
     /// Reset the state of data source to its initial state.
     void reset()
@@ -193,12 +195,13 @@ private:
     GameEntry            game;
     PackedDecodeScratch  scratch;
     size_t               nextMoveIdx;
+    size_t               maxRecordBytes = std::numeric_limits<size_t>::max();
+    bool                 retainExtraPVs = true;
 };
 
 PackedBinaryDataset::PackedBinaryDataset(const std::vector<std::string> &filenames)
     : dataSource(std::make_unique<DataSource>(filenames))
-{
-}
+{}
 
 PackedBinaryDataset::~PackedBinaryDataset() {}
 
@@ -232,6 +235,16 @@ bool PackedBinaryDataset::nextGame(GameEntry *game)
 void PackedBinaryDataset::reset()
 {
     dataSource->reset();
+}
+
+void PackedBinaryDataset::setMaxRecordBytes(size_t bytes)
+{
+    dataSource->setMaxRecordBytes(bytes);
+}
+
+void PackedBinaryDataset::setRetainExtraPVs(bool retain)
+{
+    dataSource->setRetainExtraPVs(retain);
 }
 
 // ==============================================

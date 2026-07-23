@@ -25,8 +25,8 @@
 #include "command.h"
 
 #define CXXOPTS_NO_REGEX
-#include <ctime>
 #include <cmath>
+#include <ctime>
 #include <cxxopts.hpp>
 #include <filesystem>
 #include <fstream>
@@ -68,6 +68,13 @@ void validateConfig(size_t epochs, const TuningConfig &cfg)
         throw std::invalid_argument("at least one tuning objective must be enabled");
     if (cfg.batchSize < 1)
         throw std::invalid_argument("batchsize must be greater than 0");
+    constexpr size_t MiB = 1024 * 1024;
+    if (cfg.memoryLimitMB > std::numeric_limits<size_t>::max() / MiB)
+        throw std::invalid_argument("memory-limit-mb is too large");
+    if (cfg.memoryLimitMB != 0 && cfg.memoryLimitMB < 32)
+        throw std::invalid_argument("memory-limit-mb must be 0 or at least 32");
+    if (cfg.shardSizeMB < 1 || cfg.shardSizeMB > std::numeric_limits<size_t>::max() / MiB)
+        throw std::invalid_argument("shard-size-mb must be at least 1 and fit size_t");
     if (!std::isfinite(cfg.learningRate) || cfg.learningRate <= 0)
         throw std::invalid_argument("learning-rate must be finite and greater than 0");
     if (!std::isfinite(cfg.weightDecay) || cfg.weightDecay < 0)
@@ -105,6 +112,15 @@ std::unique_ptr<Dataset> createDataset(Command::DatasetType            datasetTy
     }
 }
 
+const char *datasetFormatName(Command::DatasetType datasetType)
+{
+    switch (datasetType) {
+    case Command::DatasetType::SimpleBinary: return "bin";
+    case Command::DatasetType::PackedBinary: return "binpack";
+    default: throw std::invalid_argument("unsupported tuning dataset type");
+    }
+}
+
 }  // namespace
 
 int Command::tuning(int argc, char *argv[])
@@ -119,6 +135,7 @@ int Command::tuning(int argc, char *argv[])
     std::vector<std::string> trainDatasetPathList;
     std::vector<std::string> valDatasetPathList;
     std::vector<std::string> extensions;
+    std::string              cacheValidation;
     std::unique_ptr<Dataset> trainDataset, valDataset;
 
     cxxopts::Options options("rapfi tuning");
@@ -145,13 +162,26 @@ int Command::tuning(int argc, char *argv[])
          cxxopts::value<size_t>()->default_value("100"))  //
         ("b,batchsize",
          "Number of samples in one gradient batch",
-          cxxopts::value<size_t>()->default_value(std::to_string(cfg.batchSize)))  //
+         cxxopts::value<size_t>()->default_value(std::to_string(cfg.batchSize)))  //
         ("threads",
          "Number of tuner worker threads (0 uses hardware concurrency)",
          cxxopts::value<size_t>()->default_value(std::to_string(cfg.numThreads)))  //
         ("seed",
          "Seed for reproducible tuner random streams",
          cxxopts::value<uint64_t>()->default_value(std::to_string(cfg.seed)))  //
+        ("memory-limit-mb",
+         "Enable file-backed tuning with this process memory budget in MiB (0 keeps in memory)",
+         cxxopts::value<size_t>()->default_value(std::to_string(cfg.memoryLimitMB)))  //
+        ("prepared-cache",
+         "Directory for versioned prepared corpus shards",
+         cxxopts::value<std::string>())  //
+        ("cache-validation",
+         "Prepared-cache validation mode (strict)",
+         cxxopts::value<std::string>()->default_value("strict"))                 //
+        ("rebuild-prepared-cache", "Bypass and replace a valid prepared cache")  //
+        ("shard-size-mb",
+         "Target size of each prepared shard in MiB",
+         cxxopts::value<size_t>()->default_value(std::to_string(cfg.shardSizeMB)))  //
         ("l,learning-rate",
          "Learning rate for gradient descent",
          cxxopts::value<double>()->default_value(std::to_string(cfg.learningRate)))  //
@@ -219,62 +249,90 @@ int Command::tuning(int argc, char *argv[])
          cxxopts::value<size_t>()->default_value(std::to_string(cfg.recomputeInterval)))  //
         ("h,help", "Print tuning usage");
 
-    parseSubcommandArguments(options, argc, argv, "tuning argument",
-                             [&](const cxxopts::ParseResult &args) {
+    parseSubcommandArguments(
+        options,
+        argc,
+        argv,
+        "tuning argument",
+        [&](const cxxopts::ParseResult &args) {
+            parseTuningRules(cfg, args["rules-to-tune"].as<std::vector<std::string>>());
+            trainDatasetType = parseDatasetType(args["training-dataset-type"].as<std::string>());
+            trainDatasetPathList = args["training-dataset"].as<std::vector<std::string>>();
+            if (args.count("validation-dataset")) {
+                valDatasetType =
+                    parseDatasetType(args["validation-dataset-type"].as<std::string>());
+                valDatasetPathList = args["validation-dataset"].as<std::vector<std::string>>();
+            }
+            extensions          = args["dataset-file-extensions"].as<std::vector<std::string>>();
+            outdir              = args["output"].as<std::string>();
+            trainName           = args["name"].as<std::string>();
+            epochs              = args["epochs"].as<size_t>();
+            modelExportInterval = args["export-interval"].as<size_t>();
+            cfg.batchSize       = args["batchsize"].as<size_t>();
+            cfg.maxTuneEntries  = args["max-entries"].as<size_t>();
+            cfg.numThreads      = args["threads"].as<size_t>();
+            cfg.seed            = args["seed"].as<uint64_t>();
+            cfg.memoryLimitMB   = args["memory-limit-mb"].as<size_t>();
+            cfg.shardSizeMB     = args["shard-size-mb"].as<size_t>();
+            if (args.count("prepared-cache"))
+                cfg.preparedCachePath = args["prepared-cache"].as<std::string>();
+            cacheValidation = args["cache-validation"].as<std::string>();
+            if (cacheValidation != "strict")
+                throw std::invalid_argument(
+                    "cache-validation currently supports only strict content validation");
+            cfg.rebuildPreparedCache     = args.count("rebuild-prepared-cache");
+            cfg.learningRate             = args["learning-rate"].as<double>();
+            cfg.weightDecay              = args["weight-decay"].as<double>();
+            cfg.lossType                 = parseLossType(args["loss"].as<std::string>());
+            cfg.shuffleTuneEntries       = args.count("shuffle");
+            cfg.tuneMoveScore            = args.count("tune-move-score");
+            cfg.tuneEval                 = !args.count("no-tune-eval");
+            cfg.moveScoreLossGamma       = args["move-score-loss-gamma"].as<double>();
+            cfg.moveScoreScale           = args["move-score-scale"].as<double>();
+            cfg.moveScoreBias            = args["move-score-bias"].as<double>();
+            cfg.moveScoreMin             = args["move-score-min"].as<Score>();
+            cfg.moveScoreMax             = args["move-score-max"].as<Score>();
+            cfg.boardSizeMin             = args["min-boardsize"].as<uint8_t>();
+            cfg.boardSizeMax             = args["max-boardsize"].as<uint8_t>();
+            cfg.minPly                   = args["min-ply"].as<uint16_t>();
+            cfg.minPlyBeforeFull         = args["min-ply-before-full"].as<uint16_t>();
+            cfg.usePreviousScalingFactor = args.count("fix-scaling-factor");
+            cfg.randomMoveScoreInit      = args.count("random-move-score-init");
+            cfg.nIterations              = args["num-iteration"].as<int>();
+            cfg.nStepsPerIteration       = args["num-steps-per-iteration"].as<int>();
+            cfg.scalingFactorMin         = args["scaling-factor-lower-bound"].as<double>();
+            cfg.scalingFactorMax         = args["scaling-factor-upper-bound"].as<double>();
+            cfg.recomputeInterval        = args["recompute-interval"].as<size_t>();
 
-        parseTuningRules(cfg, args["rules-to-tune"].as<std::vector<std::string>>());
-        trainDatasetType     = parseDatasetType(args["training-dataset-type"].as<std::string>());
-        trainDatasetPathList = args["training-dataset"].as<std::vector<std::string>>();
-        if (args.count("validation-dataset")) {
-            valDatasetType = parseDatasetType(args["validation-dataset-type"].as<std::string>());
-            valDatasetPathList = args["validation-dataset"].as<std::vector<std::string>>();
-        }
-        extensions             = args["dataset-file-extensions"].as<std::vector<std::string>>();
-        outdir                 = args["output"].as<std::string>();
-        trainName              = args["name"].as<std::string>();
-        epochs                 = args["epochs"].as<size_t>();
-        modelExportInterval    = args["export-interval"].as<size_t>();
-        cfg.batchSize          = args["batchsize"].as<size_t>();
-        cfg.maxTuneEntries     = args["max-entries"].as<size_t>();
-        cfg.numThreads         = args["threads"].as<size_t>();
-        cfg.seed               = args["seed"].as<uint64_t>();
-        cfg.learningRate       = args["learning-rate"].as<double>();
-        cfg.weightDecay        = args["weight-decay"].as<double>();
-        cfg.lossType           = parseLossType(args["loss"].as<std::string>());
-        cfg.shuffleTuneEntries = args.count("shuffle");
-        cfg.tuneMoveScore      = args.count("tune-move-score");
-        cfg.tuneEval           = !args.count("no-tune-eval");
-        cfg.moveScoreLossGamma = args["move-score-loss-gamma"].as<double>();
-        cfg.moveScoreScale     = args["move-score-scale"].as<double>();
-        cfg.moveScoreBias      = args["move-score-bias"].as<double>();
-        cfg.moveScoreMin       = args["move-score-min"].as<Score>();
-        cfg.moveScoreMax       = args["move-score-max"].as<Score>();
-        cfg.boardSizeMin       = args["min-boardsize"].as<uint8_t>();
-        cfg.boardSizeMax       = args["max-boardsize"].as<uint8_t>();
-        cfg.minPly             = args["min-ply"].as<uint16_t>();
-        cfg.minPlyBeforeFull   = args["min-ply-before-full"].as<uint16_t>();
-        cfg.usePreviousScalingFactor = args.count("fix-scaling-factor");
-        cfg.randomMoveScoreInit      = args.count("random-move-score-init");
-        cfg.nIterations              = args["num-iteration"].as<int>();
-        cfg.nStepsPerIteration       = args["num-steps-per-iteration"].as<int>();
-        cfg.scalingFactorMin         = args["scaling-factor-lower-bound"].as<double>();
-        cfg.scalingFactorMax         = args["scaling-factor-upper-bound"].as<double>();
-        cfg.recomputeInterval        = args["recompute-interval"].as<size_t>();
-
-        validateConfig(epochs, cfg);
-    });
+            validateConfig(epochs, cfg);
+        });
 
     try {
         // Create output directory
         ensureDir(outdir);
         std::filesystem::path outpath = outdir;
+        if (cfg.memoryLimitMB != 0 && cfg.preparedCachePath.empty())
+            cfg.preparedCachePath = outpath / ".prepared-cache";
+        if (cfg.memoryLimitMB == 0 && !cfg.preparedCachePath.empty())
+            throw std::invalid_argument("prepared-cache requires a nonzero --memory-limit-mb");
+        if (cfg.memoryLimitMB == 0 && cfg.rebuildPreparedCache)
+            throw std::invalid_argument(
+                "rebuild-prepared-cache requires a nonzero --memory-limit-mb");
 
         // Make path list
         trainDatasetPathList = makeFileListFromPathList(trainDatasetPathList, extensions);
-        trainDataset         = createDataset(trainDatasetType, trainDatasetPathList);
+        cfg.trainDatasetPaths.clear();
+        for (const std::string &path : trainDatasetPathList)
+            cfg.trainDatasetPaths.emplace_back(path);
+        cfg.trainDatasetFormat = datasetFormatName(trainDatasetType);
+        trainDataset           = createDataset(trainDatasetType, trainDatasetPathList);
         if (!valDatasetPathList.empty()) {
             valDatasetPathList = makeFileListFromPathList(valDatasetPathList, extensions);
-            valDataset         = createDataset(valDatasetType, valDatasetPathList);
+            cfg.validationDatasetPaths.clear();
+            for (const std::string &path : valDatasetPathList)
+                cfg.validationDatasetPaths.emplace_back(path);
+            cfg.validationDatasetFormat = datasetFormatName(valDatasetType);
+            valDataset                  = createDataset(valDatasetType, valDatasetPathList);
         }
 
         // Create tuner with dataset and tunerConfig
@@ -284,7 +342,7 @@ int Command::tuning(int argc, char *argv[])
         std::ofstream statFile(outpath / "stat.csv");
         if (!statFile)
             throw std::runtime_error("unable to open tuning statistic output");
-        double        totalElapsedSeconds = 0.0;
+        double totalElapsedSeconds = 0.0;
         statFile << "Epoch, ValueLoss, PolicyLoss, ValueValLoss, PolicyValLoss, "
                     "Elapsed, Epochs/Sec, Timestamp\n";
 
