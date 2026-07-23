@@ -292,9 +292,9 @@ void ABSearcher::search(SearchThread &th)
         // Check do we have time for the next iteration?
         if (options.timeLimit && !th.engine.isTerminating()) {
             // Accumulate all best move changes across threads
-            for (const auto &th : th.engine) {
-                totalBestMoveChanges += sd.bestMoveChanges;
-                sd.bestMoveChanges = 0;
+            for (const auto &t : th.engine) {
+                ABSearchData &tsd = *t->searchDataAs<ABSearchData>();
+                totalBestMoveChanges += tsd.bestMoveChanges.exchange(0);
             }
 
             // Stop the search if exceeds time limit (do not stop in inPonder mode)

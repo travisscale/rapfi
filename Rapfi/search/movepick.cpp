@@ -242,8 +242,10 @@ Pos MovePicker::pickNextMove(Pred filter)
 
     while (curMove < endMove) {
         if constexpr (T == Best)
+            // ScoreComparator orders best-first, so the best remaining move is the
+            // *minimum* under it. (max_element here would deliver worst-first.)
             std::swap(*curMove,
-                      *std::max_element(curMove, endMove, ScoredMove::ScoreComparator {}));
+                      *std::min_element(curMove, endMove, ScoredMove::ScoreComparator {}));
 
         if (curMove->pos != ttMove && (!forbidden || !board.checkForbiddenPoint(curMove->pos))
             && filter()) {

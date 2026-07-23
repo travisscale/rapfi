@@ -292,19 +292,42 @@ bool HashTable::load(std::istream &inStream)
 
     // Validate hash dump magic
     char magic[sizeof(HashDumpMagicString)];
-    in->read(magic, sizeof(HashDumpMagicString));
+    if (!in->read(magic, sizeof(HashDumpMagicString)))
+        return false;
     if (std::memcmp(magic, HashDumpMagicString, sizeof(HashDumpMagicString)) != 0)
         return false;
 
-    in->read(reinterpret_cast<char *>(&numBuckets), sizeof(numBuckets));
-    in->read(reinterpret_cast<char *>(&generation), sizeof(generation));
-    if (numBuckets == 0)
+    // Read the header into locals first: a malformed dump must not clobber
+    // the live table's state before validation passes.
+    size_t  newNumBuckets = 0;
+    uint8_t newGeneration = 0;
+    in->read(reinterpret_cast<char *>(&newNumBuckets), sizeof(newNumBuckets));
+    in->read(reinterpret_cast<char *>(&newGeneration), sizeof(newGeneration));
+    // Reject bucket counts whose allocation size could overflow size_t - a
+    // wrapped allocSize could succeed as a tiny allocation and the fill loop
+    // below would then write far past it. Capping at SIZE_MAX/2 also leaves
+    // ample headroom for any page/alignment round-up inside the allocator.
+    if (!*in || newNumBuckets == 0 || newNumBuckets > (SIZE_MAX / 2) / sizeof(TTBucket))
         return false;
+    numBuckets = newNumBuckets;
+    generation = newGeneration;
 
     if (table)
         MemAlloc::alignedLargePageFree(table);
     size_t allocSize = sizeof(TTBucket) * numBuckets;
     table            = static_cast<TTBucket *>(MemAlloc::alignedLargePageAlloc(allocSize));
+    if (!table) {
+        // Allocation failure must not leave the TT unusable (probe/store/
+        // prefetch and hashUsage all assume a valid table). Fall back to a
+        // fresh table via resize(), which follows the established degradation
+        // policy (halve until an allocation succeeds, exit if even one bucket
+        // is impossible).
+        ERRORL("Failed to allocate " << (allocSize >> 10) << " KB for loading hash table.");
+        size_t targetSizeKB = std::max<size_t>(allocSize >> 10, 1);
+        numBuckets          = 0;  // force resize() to reallocate
+        resize(targetSizeKB);
+        return false;
+    }
 
     for (size_t i = 0; i < numBuckets; i++) {
         TTBucket &cluster = table[i];
@@ -315,8 +338,11 @@ bool HashTable::load(std::istream &inStream)
 
 int HashTable::hashUsage() const
 {
-    size_t cnt     = 0;
-    size_t testCnt = numBuckets >> 10;
+    size_t cnt = 0;
+    // Sample one bucket per 1024 buckets, clamped to at least one so tiny
+    // tables (fewer than 1024 buckets, e.g. after a degraded resize) do not
+    // divide by zero. numBuckets >= 1 is a class invariant kept by resize().
+    size_t testCnt = std::max<size_t>(numBuckets >> 10, 1);
 
     for (size_t i = 0; i < testCnt; ++i) {
         TTEntry *entry = table[i].entry;
