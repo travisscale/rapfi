@@ -267,6 +267,7 @@ std::vector<std::string> listAllFilesInDirRecursively(const std::string         
         if (p.is_regular_file() && inExts(p.path().extension()))
             filenames.push_back(pathToConsoleString(p.path()));
     }
+    std::sort(filenames.begin(), filenames.end());
     return filenames;
 }
 
