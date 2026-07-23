@@ -19,6 +19,7 @@
 #include "movepick.h"
 
 #include "../eval/evaluator.h"
+#include "../eval/scoretables.h"
 #include "../game/board.h"
 #include "../game/movegen.h"
 #include "searchthread.h"
@@ -66,7 +67,7 @@ ScoredMove *generateDefendB4F3Moves(Rule rule, const Board &board, ScoredMove *m
 template <typename Comparator>
 void fastPartialSort(ScoredMove *begin, ScoredMove *end, Score limit, Comparator comp)
 {
-    // heruistic values
+    // heuristic values
     constexpr size_t InsertionSortLimit = MAX_MOVES / 4;
     constexpr size_t SortLimit          = MAX_MOVES * 2 / 3;
 
@@ -342,6 +343,9 @@ void MovePicker::scoreAllMoves()
         // Use the normalized policy if we do have policy from evaluator
         if (hasPolicy) {
             assert(evaluator);
+            // BUG: should pass normalizedPolicyTemp here (and use it in the raw-score
+            // fallback below); currently the softmax always runs at temperature 1.0.
+            // Wiring it changes search behavior, so it needs its own SPRT-gated change.
             policyBuf->applySoftmax();
             for (auto &m : *this)
                 m.policy = (*policyBuf)[m.pos];

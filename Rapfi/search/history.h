@@ -56,7 +56,7 @@ namespace detail {
 template <class T, size_t... Sizes>
 using MDNativeArray = typename detail::MultiDimNativeArray<T, Sizes...>::type;
 
-/// HistTable is a handy multi-demensional array to store history statistics.
+/// HistTable is a handy multi-dimensional array to store history statistics.
 /// @tparam ValueT The base value type of the array
 /// @tparam Range The range [-Range, Range] of the value
 /// @tparam Shape The size list of multiple dimensions, at least have one.

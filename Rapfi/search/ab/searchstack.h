@@ -61,7 +61,7 @@ struct SearchStack
 
     /// Check whether a move is killer at this ply.
     bool isKiller(Pos move) const { return move == killers[0] || move == killers[1]; }
-    /// Update killer heruistic move.
+    /// Update killer heuristic move.
     void setKiller(Pos move)
     {
         if (killers[0] != move) {

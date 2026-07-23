@@ -258,14 +258,14 @@ void Config::readGeneral(const cpptoml::table &t, PendingConfig &pending)
     if (t.get_as<std::string>("coord_conversion_mode")) {
         std::string coordModeStr = *t.get_as<std::string>("coord_conversion_mode");
         if (coordModeStr == "X_flipY")
-            cfg.ioCoordMode = CoordConvertionMode::X_FLIPY;
+            cfg.ioCoordMode = CoordConversionMode::X_FLIPY;
         else if (coordModeStr == "flipY_X")
-            cfg.ioCoordMode = CoordConvertionMode::FLIPY_X;
+            cfg.ioCoordMode = CoordConversionMode::FLIPY_X;
         else {
             if (coordModeStr != "none")
                 MESSAGEL("Warning: unknown coordinate conversion mode [" << coordModeStr
                                                                          << "], reset to [none].");
-            cfg.ioCoordMode = CoordConvertionMode::NONE;
+            cfg.ioCoordMode = CoordConversionMode::NONE;
         }
     }
 

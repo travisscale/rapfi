@@ -174,7 +174,7 @@ class KatagoNumpyDataset : public Dataset
 {
 public:
     /// Construct a katago numpy dataset from a list of npz file names.
-    /// Rule is needed since rule infomation is not recorded in npz files.
+    /// Rule is needed since rule information is not recorded in npz files.
     KatagoNumpyDataset(const std::vector<std::string> &filenames, Rule rule);
     ~KatagoNumpyDataset();
 

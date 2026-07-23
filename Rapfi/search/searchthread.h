@@ -69,12 +69,12 @@ public:
     explicit SearchThread(SearchEngine &searchEngine, uint32_t id);
     /// Start the thread loop. This should be called once after the thread is created.
     void init(bool bindGroup);
-    /// Destory this search thread. Search must be stopped before entering.
-    virtual ~SearchThread();
+    /// Destroy this search thread. Search must be stopped before entering.
+    ~SearchThread();
     /// Clear the thread state between two search.
-    virtual void clear();
+    void clear();
     /// Setup the board instance in this thread, and update the evaluator.
-    virtual void setBoardAndEvaluator(const Board &board);
+    void setBoardAndEvaluator(const Board &board);
     /// Return if this thread is the main thread.
     bool isMainThread() const { return id == 0; }
     /// Launch a custom task in this thread.

@@ -104,11 +104,4 @@ constexpr bool isPtrAligned(const T *pointer)
     return (reinterpret_cast<uintptr_t>(pointer) & (AlignSize - 1)) == 0;
 }
 
-template <size_t AlignSize, typename T>
-constexpr size_t alignDimSize(size_t dimSize)
-{
-    size_t alignBytes = std::max<size_t>(AlignSize / sizeof(T), 1);
-    return alignBytes * ((dimSize + alignBytes - 1) / alignBytes);
-}
-
 }  // namespace Evaluation::simd

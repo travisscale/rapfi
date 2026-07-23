@@ -59,7 +59,9 @@ auto makeDBCreationOptions(std::string headline)
     return options;
 }
 
-std::unique_ptr<DBStorage> createDBStorage(const cxxopts::ParseResult &args)
+/// Open a storage from parsed command-line options. (Named distinctly from the
+/// Database::createDBStorage protocol factory: this one is CLI-facing and throws.)
+std::unique_ptr<DBStorage> openDBStorageFromArgs(const cxxopts::ParseResult &args)
 {
     std::string databaseURL = args["url"].as<std::string>();
 
@@ -76,7 +78,7 @@ std::unique_ptr<DBStorage> createDBStorage(const cxxopts::ParseResult &args)
     return dbStorage;
 }
 
-std::unique_ptr<DBStorage> createDBStorageFromCmdline(std::string cmdline)
+std::unique_ptr<DBStorage> openDBStorageFromCmdline(std::string cmdline)
 {
     // Split arguments from cmdline (owned storage; cxxopts wants argv-style char*)
     std::vector<std::string> tokens {""};  // argv[0] placeholder
@@ -93,7 +95,7 @@ std::unique_ptr<DBStorage> createDBStorageFromCmdline(std::string cmdline)
     std::unique_ptr<DBStorage> dbStorage = nullptr;
     try {
         auto args = options.parse(arguments.size(), &arguments[0]);
-        dbStorage = createDBStorage(args);
+        dbStorage = openDBStorageFromArgs(args);
     }
     catch (const std::exception &e) {
         ERRORL("Failed to create database: " << e.what());
@@ -240,7 +242,7 @@ void Command::database(int argc, char *argv[])
     auto options = makeDBCreationOptions("rapfi database");
     options.add_options()  //
         ("commands",
-         "Database commands (seperate multiple commands with ';')",
+         "Database commands (separate multiple commands with ';')",
          cxxopts::value<std::string>()->default_value(""))  //
         ("h,help", "Print database usage");
 
@@ -256,7 +258,7 @@ void Command::database(int argc, char *argv[])
             }
         }
 
-        dbStorage = createDBStorage(args);
+        dbStorage = openDBStorageFromArgs(args);
     });
 
     std::istream &is =
@@ -426,7 +428,7 @@ void Command::database(int argc, char *argv[])
         else if (cmd == "DBMERGE") {
             std::string cmdline;
             std::getline(is, cmdline);
-            if (auto dbToMerge = createDBStorageFromCmdline(cmdline)) {
+            if (auto dbToMerge = openDBStorageFromCmdline(cmdline)) {
                 size_t writeCount =
                     mergeDatabase(*dbStorage, *dbToMerge, Database::DatabaseCfg.search.overwriteRule);
                 MESSAGEL("Merged " << writeCount << " out of " << dbToMerge->size()
@@ -436,13 +438,13 @@ void Command::database(int argc, char *argv[])
         else if (cmd == "DBSPLIT") {
             std::string cmdline;
             std::getline(is, cmdline);
-            if (auto dbToSplit = createDBStorageFromCmdline(cmdline)) {
+            if (auto dbToSplit = openDBStorageFromCmdline(cmdline)) {
                 MESSAGEL("Spliting branch " << board->positionString()
                                             << ", this might take a while...");
                 auto   startTime  = now();
                 size_t writeCount = splitDatabase(*dbStorage, *dbToSplit, *board, rule);
                 auto   endTime    = now();
-                MESSAGEL("Write " << writeCount << " records into the spilted database using "
+                MESSAGEL("Write " << writeCount << " records into the split database using "
                                   << (endTime - startTime) << " ms.");
             }
         }

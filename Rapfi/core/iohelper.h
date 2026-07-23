@@ -31,7 +31,7 @@
 
 /// RAII wrapper that locks a process-wide mutex for the duration of one output expression,
 /// ensuring multi-threaded `<<` chains do not interleave on stdout/stderr. Use the
-/// `sync_cout()` / `sync_cerr()` factories rather than constructing this directly.
+/// `sync_cout()` factory rather than constructing this directly.
 struct SyncOutputStream
 {
     SyncOutputStream(std::ostream &os);
@@ -80,14 +80,14 @@ struct SyncOutputStream
 //
 // The piskvork protocol speaks in (x, y) integer pairs that may need to be remapped before
 // being turned into a Pos, so the engine can match different GUIs' coordinate orientations.
-// These helpers are pure: the active CoordConvertionMode (held by Config) is passed in.
+// These helpers are pure: the active CoordConversionMode (held by Config) is passed in.
 
 /// Convert protocol (x, y) to an internal Pos under `mode`. `(x, y) == (-1, -1)` is PASS.
-Pos inputCoordConvert(int x, int y, int boardsize, CoordConvertionMode mode);
+Pos inputCoordConvert(int x, int y, int boardsize, CoordConversionMode mode);
 
 /// Inverse of `inputCoordConvert`: the protocol `(x, y)` pair for the given Pos under `mode`.
 /// Returns `(-1, -1)` for a PASS move.
-std::pair<int, int> outputCoordConvert(Pos pos, int boardsize, CoordConvertionMode mode);
+std::pair<int, int> outputCoordConvert(Pos pos, int boardsize, CoordConversionMode mode);
 
 // -------------------------------------------------
 // Stream formatters
@@ -97,7 +97,7 @@ struct CoordText
 {
     Pos                 pos;
     int                 boardsize;
-    CoordConvertionMode mode = CoordConvertionMode::NONE;
+    CoordConversionMode mode = CoordConversionMode::NONE;
 };
 
 /// Manipulator for streaming a list of moves with configurable spacing and coordinate style.
@@ -108,7 +108,7 @@ struct MovesText
     bool                withSpace = true;   ///< Insert a space between moves.
     bool                rawCoords = false;  ///< Emit `"x,y"` pairs instead of `"H8"` labels.
     int                 boardsize = 15;     ///< Board size used by raw-coord conversion.
-    CoordConvertionMode mode = CoordConvertionMode::NONE;  ///< Mode used by raw-coord conversion.
+    CoordConversionMode mode = CoordConversionMode::NONE;  ///< Mode used by raw-coord conversion.
 };
 
 std::ostream &operator<<(std::ostream &out, Pos pos);

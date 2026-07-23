@@ -20,6 +20,7 @@
 
 #include "../config.h"
 #include "../core/iohelper.h"
+#include "../eval/scoretables.h"
 #include "../game/board.h"
 #include "searchconfig.h"
 #include "searchthread.h"

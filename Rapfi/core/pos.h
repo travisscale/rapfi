@@ -267,7 +267,7 @@ constexpr Pos applyTransform(Pos pos, int sizeX, int sizeY, TransformType trans)
 /// engine can match different GUIs' coordinate orientations. The active mode is held by the
 /// configuration layer (`Config::GeneralCfg.ioCoordMode`) and passed explicitly to the conversion
 /// helpers in iohelper.h.
-enum class CoordConvertionMode {
+enum class CoordConversionMode {
     NONE,     ///< No remapping.
     X_FLIPY,  ///< Keep x, flip y.
     FLIPY_X,  ///< Swap and flip: (x, y) <-> (flipped y, x).

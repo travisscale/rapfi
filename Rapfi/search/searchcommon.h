@@ -117,7 +117,7 @@ struct SearchOptions
     bool disableOpeningQuery = false;
     /// Enable background pondering after each search.
     bool pondering = false;
-    /// Enable time control infomation to terminate search.
+    /// Enable time control information to terminate search.
     bool timeLimit = false;
 
     /// Output realtime thinking process.
@@ -171,7 +171,7 @@ struct SearchOptions
     void setTimeControl(int64_t turnTime, int64_t matchTime);
 };
 
-/// Get the therotical game value after reaching the max game ply.
+/// Get the theoretical game value after reaching the max game ply.
 Value getDrawValue(const Board &board, const SearchOptions &options, int ply);
 
 }  // namespace Search

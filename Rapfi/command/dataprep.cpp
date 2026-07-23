@@ -64,7 +64,7 @@ void Command::dataprep(int argc, char *argv[])
          "Output dataset type, one of [txt, bin, bin_lz4, binpack, binpack_lz4, numpy]",
          cxxopts::value<std::string>()->default_value("numpy"))  //
         ("default-rule",
-         "Default rule for dataset type that does not contain rule infomation",
+         "Default rule for dataset type that does not contain rule information",
          cxxopts::value<std::string>()->default_value("freestyle"))  //
         ("dataset-file-extensions",
          "Extensions to filter dataset file in a directory",

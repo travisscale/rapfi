@@ -45,6 +45,8 @@ constexpr bool  UseLCBForBestmoveSelection = true;
 constexpr float LCBStdevs                  = 6.28f;
 constexpr float LCBMinVisitProp            = 0.1f;
 
+/// Intended policy softmax temperatures. NOTE: currently ignored by MovePicker
+/// (see the normalizedPolicyTemp bug note in movepick.h) - kept until wired.
 constexpr float PolicyTemperature     = 0.90f;
 constexpr float RootPolicyTemperature = 1.05f;
 

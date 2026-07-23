@@ -19,7 +19,6 @@
 #pragma once
 
 #include "../core/math.h"
-#include "../core/platform.h"
 #include "../core/types.h"
 
 #include <array>

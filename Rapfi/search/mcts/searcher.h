@@ -27,7 +27,6 @@
 #include "nodetable.h"
 
 #include <atomic>
-#include <unordered_set>
 
 namespace Search::MCTS {
 

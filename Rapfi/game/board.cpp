@@ -20,9 +20,10 @@
 
 #include "../config.h"
 #include "../core/iohelper.h"
+#include "../core/math.h"
 #include "../core/pos.h"
-#include "../core/utils.h"
 #include "../eval/evaluator.h"
+#include "../eval/scoretables.h"
 #include "../search/searchthread.h"
 #include "scopedmove.h"
 

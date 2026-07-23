@@ -47,7 +47,8 @@ class SearchEngine;  // forward declaration
 
 /// Database access parameters captured once per search from DatabaseCfg, so the
 /// search node loop reads stable values without reaching into the config hub.
-/// (Pattern-setter for the Phase-4 per-module config structs.)
+/// (The overwrite biases are not part of the snapshot: DBClient reads them live
+/// via checkOverwrite's default overload.)
 struct DatabaseSearchParams
 {
     bool readonlyMode;                   // DatabaseCfg.search.readonlyMode

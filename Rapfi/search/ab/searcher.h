@@ -57,7 +57,7 @@ public:
     float previousTimeReduction;  // (keep for one game)
     Value previousBestValue;      // (keep for one game)
 
-    /// Lookup tables used for reduction/purning, where index is depth or moveCount.
+    /// Lookup tables used for reduction/pruning, where index is depth or moveCount.
     std::array<Depth, MAX_MOVES + 1> reductions[RULE_NB];
 
     ABSearcher() : Searcher(true) {}
@@ -81,7 +81,7 @@ public:
     /// returns the best thread's first root move (or nullptr on early-outs).
     const RootMove *searchMain(SearchThread &th) override;
 
-    /// The main iterative deeping search loop. It calls search() repeatedly with increasing depth
+    /// The main iterative deepening search loop. It calls search() repeatedly with increasing depth
     /// until the stop condition is reached. Results are updated to thread bounded with the board.
     void search(SearchThread &th) override;
 

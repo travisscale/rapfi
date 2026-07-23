@@ -22,6 +22,7 @@
 #include "core/types.h"
 
 #include <cstddef>
+#include <iosfwd>
 #include <memory>
 #include <string>
 
@@ -37,10 +38,10 @@ extern const std::string InternalConfig;
 
 /// GeneralConfig groups the engine-wide knobs read from the "[general]" TOML
 /// table. One mutable global instance (GeneralCfg) holds the live
-/// configuration; readGeneral fills it (see the audit table in the phase plan
-/// - the three string-enum keys hard-reset on unknown values), and runtime
-/// mutation (gomocup toggles, benchmark save/restore) is plain field
-/// assignment or whole-struct copy.
+/// configuration; readGeneral fills it (the three string-enum keys hard-reset
+/// to their defaults on unknown values), and runtime mutation (gomocup
+/// toggles, benchmark save/restore) is plain field assignment or
+/// whole-struct copy.
 struct GeneralConfig
 {
     /// Should we reload config file before searching each move.
@@ -52,7 +53,7 @@ struct GeneralConfig
     /// Message output mode.
     MsgMode messageMode = MsgMode::BRIEF;
     /// Coordinate conversion mode for protocol I/O.
-    CoordConvertionMode ioCoordMode = CoordConvertionMode::NONE;
+    CoordConversionMode ioCoordMode = CoordConversionMode::NONE;
     /// Default candidate range mode if not specified when creating board.
     CandidateRange defaultCandidateRange = CandidateRange::SQUARE3_LINE4;
     /// Memory reserved for stuff other than hash table in max_memory option.

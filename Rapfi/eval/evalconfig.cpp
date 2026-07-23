@@ -45,10 +45,10 @@ template <typename ArchMaker>
 EvaluatorMakerFunc wrapEvaluatorMaker(EvaluatorWeightsConfig cfg,
                                       PathResolver           resolvePath,
                                       ArchMaker              maker,
-                                      bool                   seperateBlackAndWhiteWeights)
+                                      bool                   separateBlackAndWhiteWeights)
 {
     return [cfg = std::move(cfg), resolvePath = std::move(resolvePath), maker,
-            seperateBlackAndWhiteWeights](int              boardSize,
+            separateBlackAndWhiteWeights](int              boardSize,
                                           Rule             rule,
                                           Numa::NumaNodeId numaId) -> std::unique_ptr<Evaluator> {
         try {
@@ -58,10 +58,10 @@ EvaluatorMakerFunc wrapEvaluatorMaker(EvaluatorWeightsConfig cfg,
 
                 if (weightCfg.file)
                     weightPath = resolvePath(u8path(*weightCfg.file));
-                else if (!seperateBlackAndWhiteWeights)
+                else if (!separateBlackAndWhiteWeights)
                     throw std::runtime_error("must specify weight_file in weight configs.");
 
-                if (seperateBlackAndWhiteWeights && weightPath.empty()) {
+                if (separateBlackAndWhiteWeights && weightPath.empty()) {
                     // Deliberate resolve-before-presence-check, replicating the
                     // old cpptoml dereference order (disengaged -> empty string).
                     blackWeightPath = resolvePath(u8path(weightCfg.fileBlack.value_or("")));

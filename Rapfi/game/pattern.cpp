@@ -18,7 +18,7 @@
 
 #include "pattern.h"
 
-#include "../core/utils.h"
+#include "../core/math.h"
 #include "../eval/scoretables.h"
 
 #include <array>

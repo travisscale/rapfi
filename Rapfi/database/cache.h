@@ -24,7 +24,7 @@
 
 namespace Database {
 
-/// A simple lru cache implementation with std::map and std::list.
+/// A simple LRU cache implementation with std::unordered_map and std::list.
 template <typename KeyT, typename ValueT>
 class LRUCacheTable
 {

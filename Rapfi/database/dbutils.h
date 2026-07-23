@@ -42,7 +42,7 @@ void databaseToCSVFile(DBStorage                                           &dbSt
 size_t mergeDatabase(DBStorage &dbDst, DBStorage &dbSrc, OverwriteRule owRule);
 
 /// Split a database branch from dbSrc to dbDst.
-/// @return The number of records spilted to dbDst.
+/// @return The number of records split to dbDst.
 size_t splitDatabase(DBStorage &dbSrc, DBStorage &dbDst, const Board &board, Rule rule);
 
 /// Import a lib file into the database.

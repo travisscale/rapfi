@@ -107,7 +107,7 @@ void HistoryTracker::updateQuietStats(Pos move, int bonus)
     Color self = board.sideToMove();
 
     searchData->mainHistory[self][move][HIST_QUIET] << bonus;
-    searchStack->setKiller(move);  // Update killer heruistic move
+    searchStack->setKiller(move);  // Update killer heuristic move
 }
 
 }  // namespace Search::AB

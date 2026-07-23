@@ -111,11 +111,6 @@ struct StandardHeaderLoader
         headerValidator = std::move(validator);
     }
 
-    void setHeaderReader(std::function<void(StandardHeader, LoadArgs &)> reader)
-    {
-        headerReader = std::move(reader);
-    }
-
     LargePagePtr<WeightType> load(std::istream &is, LoadArgs args) override
     {
         struct RawHeaderData
@@ -144,8 +139,6 @@ struct StandardHeaderLoader
                                           std::move(description)};
             if (!headerValidator(header, args))
                 return nullptr;
-            if (headerReader)
-                headerReader(header, args);
         }
         else {
             is.ignore(headerData.desc_len);
@@ -157,7 +150,6 @@ struct StandardHeaderLoader
 private:
     BaseLoader                                      baseLoader;
     std::function<bool(StandardHeader, LoadArgs &)> headerValidator;
-    std::function<void(StandardHeader, LoadArgs &)> headerReader;
 
     static std::vector<Rule> parseRuleMask(uint32_t ruleMask)
     {

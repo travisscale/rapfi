@@ -19,6 +19,7 @@
 #include "../config.h"
 #include "../core/filesystem.h"
 #include "../core/iohelper.h"
+#include "../eval/scoretables.h"
 #include "../tuning/dataset.h"
 #include "../tuning/tuner.h"
 #include "argutils.h"
@@ -189,7 +190,7 @@ int Command::tuning(int argc, char *argv[])
          "Learning rate for gradient descent",
          cxxopts::value<double>()->default_value(std::to_string(cfg.learningRate)))  //
         ("w,weight-decay",
-         "Weight dacay for gradient descent (0.0~1.0)",
+         "Weight decay for gradient descent (0.0~1.0)",
          cxxopts::value<double>()->default_value(std::to_string(cfg.weightDecay)))  //
         ("L,loss",
          "Loss type (one of [L1, L2, BCE])",

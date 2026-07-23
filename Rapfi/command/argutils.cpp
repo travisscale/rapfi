@@ -25,6 +25,7 @@
     #define CXXOPTS_NO_REGEX
     #include <cxxopts.hpp>
 #endif
+#include <algorithm>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
@@ -190,9 +191,9 @@ Opening::OpeningGenConfig Command::parseOpengenConfig(const cxxopts::ParseResult
     cfg.balanceWindow           = Value(result["balance-window"].as<int>());
 
     if (cfg.minMoves <= 0 || cfg.maxMoves < cfg.minMoves)
-        throw std::invalid_argument("condition 0 < minMove <= maxMove does no satisfy");
+        throw std::invalid_argument("condition 0 < minMove <= maxMove is not satisfied");
     if (cfg.localSizeMin < 0 || cfg.localSizeMax < cfg.localSizeMin)
-        throw std::invalid_argument("condition 0 < minAreaSize <= maxAreaSize does no satisfy");
+        throw std::invalid_argument("condition 0 < minAreaSize <= maxAreaSize is not satisfied");
     if (cfg.balanceWindow < 0)
         throw std::invalid_argument("balancewindow must be greater than 0");
 

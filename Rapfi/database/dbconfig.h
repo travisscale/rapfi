@@ -30,12 +30,13 @@ namespace Database {
 
 /// DatabaseConfig groups every knob read from the "[database]" TOML table and
 /// its sub-tables. One mutable global instance (DatabaseCfg) holds the live
-/// configuration: config.cpp's readDatabase fills it (see the key-by-key audit
-/// table in the phase plan - per-key reload semantics are deliberately mixed),
+/// configuration: config.cpp's readDatabase fills it (per-key reload
+/// semantics are deliberately mixed - some keys only apply on restart),
 /// consumers read fields directly, and runtime mutation (the gomocup
 /// DATABASE_READONLY toggle, YXSETDATABASE) is plain field assignment.
 /// Search reads go through DatabaseSearchParams::captureFromConfig(), which
-/// snapshots the `search` sub-struct once per search.
+/// snapshots the search-gating knobs once per search (the overwrite biases
+/// are read live inside DBClient - see checkOverwrite's default overload).
 struct DatabaseConfig
 {
     // [database]

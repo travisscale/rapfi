@@ -22,7 +22,6 @@
 #include "../core/platform.h"
 #include "../core/pos.h"
 #include "../core/types.h"
-#include "../eval/scoretables.h"
 #include "bitboard.h"
 #include "candarea.h"
 #include "pattern.h"
@@ -116,7 +115,8 @@ public:
     /// need, and must be paired (the same MT in the matching undo()).
     enum class MoveType {
         NORMAL,        ///< Update cell, pattern, score, classical eval, and external evaluator.
-        NO_EVALUATOR,  ///< As NORMAL but skip the external evaluator.
+        NO_EVALUATOR,  ///< As NORMAL but skip the external evaluator. Reserved for a future
+                       ///< search mode that relies on the classical eval only (no caller yet).
         NO_EVAL,       ///< Update cell, pattern and score only (no eval at all).
         NO_EVAL_MULTI  ///< As NO_EVAL, but do not flip the side to move.
     };
@@ -189,7 +189,10 @@ public:
     }
 
     /// Aggregate four-direction pattern of one side at pos. Occupied/wall cells return
-    /// their frozen (placement-time / zero) values — see the freeze invariant in the spec.
+    /// their frozen (placement-time / zero) values: move() never rewrites the pattern state
+    /// of a cell once a stone lands on it, and undo() restores it LIFO, so a stone's cell
+    /// keeps the exact patterns it had as an empty cell at placement time (the "freeze
+    /// invariant"; checkForbiddenPoint relies on it).
     inline Pattern4 pattern4(Pos pos, Color side) const
     {
         assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
@@ -250,7 +253,7 @@ public:
     bool isInBoard(Pos pos) const { return pos.isInBoard(boardSize, boardSize); }
 
     /// Check if the pos is on an empty cell. Wall and occupied cells both read false.
-    /// @pos The pos to query, which is assumed to meet 'pos.valid() == true'.
+    /// @param pos The pos to query, which is assumed to meet 'pos.valid() == true'.
     bool isEmpty(Pos pos) const { return emptyBB.test(pos); }
 
     /// Check if the pos is legal (on an empty cell or is a pass move). The PASS check comes first

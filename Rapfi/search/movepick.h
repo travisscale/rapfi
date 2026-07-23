@@ -89,6 +89,8 @@ private:
     bool                      allowPlainB4InVCF;
     bool                      hasPolicy;
     bool                      useNormalizedPolicy;
+    // BUG: stored but not yet applied - scoreAllMoves() calls applySoftmax() at the
+    // default temperature 1.0. Keep the plumbing; wiring it is a pending (SPRT-gated) fix.
     float                     normalizedPolicyTemp;
     Score                     curScore;
     Score                     maxPolicyScore;
