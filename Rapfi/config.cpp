@@ -59,19 +59,11 @@ constexpr uint32_t I(uint32_t y, uint32_t x)
 
 }  // namespace
 
-namespace Config {
-
-// -------------------------------------------------
-// Model configs
+namespace Evaluation {
 
 /// Scaling Factor is used for conversion between eval value and win rate.
 /// Formula: win rate = sigmoid(eval / ScalingFactor)
-float ScalingFactor                  = 200.0f;
-float EvaluatorMarginWinLossScale    = 1.18f;
-float EvaluatorMarginWinLossExponent = 3.07f;
-float EvaluatorMarginScale           = 395.0f;
-float EvaluatorDrawBlackWinRate      = 0.5f;
-float EvaluatorDrawRatio             = 1.0f;
+float ScalingFactor = 200.0f;
 
 // Classical evaluation and score tables
 // Note that Renju has asymmetry eval and score
@@ -79,6 +71,19 @@ float EvaluatorDrawRatio             = 1.0f;
 Eval          EVALS[RULE_NB + 1][PCODE_NB];
 Eval          EVALS_THREAT[RULE_NB + 1][THREAT_NB];
 Pattern4Score P4SCORES[RULE_NB + 1][PCODE_NB];
+
+}  // namespace Evaluation
+
+namespace Config {
+
+// -------------------------------------------------
+// Model configs
+
+float EvaluatorMarginWinLossScale    = 1.18f;
+float EvaluatorMarginWinLossExponent = 3.07f;
+float EvaluatorMarginScale           = 395.0f;
+float EvaluatorDrawBlackWinRate      = 0.5f;
+float EvaluatorDrawRatio             = 1.0f;
 
 // -------------------------------------------------
 // General options
@@ -477,10 +482,10 @@ void Config::readModel(const cpptoml::table &t)
             bool hasAsymmetryRenjuEval = false;
             for (Rule r : Rules) {
                 auto setEvalBlack = [r](PatternCode pcode, Eval ev) {
-                    EVALS[r + BLACK][pcode] = ev;
+                    Evaluation::EVALS[r + BLACK][pcode] = ev;
                 };
                 auto setEvalWhite = [r](PatternCode pcode, Eval ev) {
-                    EVALS[r + WHITE][pcode] = ev;
+                    Evaluation::EVALS[r + WHITE][pcode] = ev;
                 };
                 auto ruleEval = eval->get_table(RuleName[r]);
                 if (!ruleEval)  // fallback
@@ -515,11 +520,13 @@ void Config::readModel(const cpptoml::table &t)
                 auto oppoTable = t.get_table("oppo");
                 readValueModel<Score, -8192, 8191>(selfTable ? *selfTable : t,
                                                    [tableIdx](PatternCode pcode, Score score) {
-                                                       P4SCORES[tableIdx][pcode][0] = score;
+                                                       Evaluation::P4SCORES[tableIdx][pcode][0] =
+                                                           score;
                                                    });
                 readValueModel<Score, -8192, 8191>(oppoTable ? *oppoTable : t,
                                                    [tableIdx](PatternCode pcode, Score score) {
-                                                       P4SCORES[tableIdx][pcode][1] = score;
+                                                       Evaluation::P4SCORES[tableIdx][pcode][1] =
+                                                           score;
                                                    });
             };
             bool hasAsymmetryRenjuScore = false;
@@ -552,7 +559,8 @@ void Config::readModel(const cpptoml::table &t)
     }
 
     // Read scalingFactor
-    ScalingFactor = (float)t.get_as<double>("scaling_factor").value_or(ScalingFactor);
+    Evaluation::ScalingFactor =
+        (float)t.get_as<double>("scaling_factor").value_or(Evaluation::ScalingFactor);
 
     // Read evaluator
     if (auto evaluator = t.get_table("evaluator"))
@@ -966,10 +974,11 @@ bool Config::loadModel(std::istream &inStream)
 
     double scalingFactorF64;
     in->read(reinterpret_cast<char *>(&scalingFactorF64), sizeof(scalingFactorF64));
-    ScalingFactor = scalingFactorF64;
+    Evaluation::ScalingFactor = scalingFactorF64;
 
-    in->read(reinterpret_cast<char *>(EVALS), sizeof(EVALS));
-    in->read(reinterpret_cast<char *>(EVALS_THREAT), sizeof(EVALS_THREAT));
+    in->read(reinterpret_cast<char *>(Evaluation::EVALS), sizeof(Evaluation::EVALS));
+    in->read(reinterpret_cast<char *>(Evaluation::EVALS_THREAT),
+             sizeof(Evaluation::EVALS_THREAT));
 
     Score scores[PCODE_NB][2];
     for (int rule = 0; rule < RULE_NB + 1; rule++) {
@@ -977,8 +986,8 @@ bool Config::loadModel(std::istream &inStream)
 
         // Set score table to P4SCORES
         for (size_t pcode = 0; pcode < PCODE_NB; pcode++) {
-            P4SCORES[rule][pcode][0] = scores[pcode][0];
-            P4SCORES[rule][pcode][1] = scores[pcode][1];
+            Evaluation::P4SCORES[rule][pcode][0] = scores[pcode][0];
+            Evaluation::P4SCORES[rule][pcode][1] = scores[pcode][1];
         }
     }
 
@@ -991,17 +1000,18 @@ void Config::exportModel(std::ostream &outStream)
     std::ostream *out = compressor.openOutputStream();
     assert(out);
 
-    double scalingFactorF64 = ScalingFactor;
+    double scalingFactorF64 = Evaluation::ScalingFactor;
     out->write(reinterpret_cast<char *>(&scalingFactorF64), sizeof(scalingFactorF64));
-    out->write(reinterpret_cast<char *>(EVALS), sizeof(EVALS));
-    out->write(reinterpret_cast<char *>(EVALS_THREAT), sizeof(EVALS_THREAT));
+    out->write(reinterpret_cast<char *>(Evaluation::EVALS), sizeof(Evaluation::EVALS));
+    out->write(reinterpret_cast<char *>(Evaluation::EVALS_THREAT),
+               sizeof(Evaluation::EVALS_THREAT));
 
     Score scores[PCODE_NB][2];
     for (int rule = 0; rule < RULE_NB + 1; rule++) {
         // Get score table out of P4SCORES
         for (size_t pcode = 0; pcode < PCODE_NB; pcode++) {
-            scores[pcode][0] = (Score)P4SCORES[rule][pcode][0];
-            scores[pcode][1] = (Score)P4SCORES[rule][pcode][1];
+            scores[pcode][0] = (Score)Evaluation::P4SCORES[rule][pcode][0];
+            scores[pcode][1] = (Score)Evaluation::P4SCORES[rule][pcode][1];
         }
 
         out->write(reinterpret_cast<char *>(scores), sizeof(scores));

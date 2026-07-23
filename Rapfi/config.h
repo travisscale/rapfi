@@ -18,62 +18,20 @@
 
 #pragma once
 
-#include "core/math.h"
+// The classical eval tables and their query API live in namespace Evaluation in
+// eval/scoretables.h. Hot-path headers should include that header directly instead
+// of this one.
+#include "eval/scoretables.h"
+
 #include "core/pos.h"
 #include "core/types.h"
 
-#include <algorithm>
-#include <cassert>
-#include <cmath>
+#include <cstddef>
 #include <memory>
 #include <string>
 
-/// Total count of patterncode (pattern combination for 4 directions)
-constexpr uint32_t PCODE_NB = combineNumber(PATTERN_NB, 4);
-
-constexpr uint32_t THREAT_NB = power(2, 11);
-
 /// MsgMode represents the message mode that controls how messages are outputed in search.
 enum class MsgMode { NONE, BRIEF, NORMAL, UCILIKE };
-
-/// Pattern4Score struct packs score and pattern4 into a struct of 2 bytes.
-struct Pattern4Score
-{
-    int32_t  _scoreSelf : 14;
-    int32_t  _scoreOppo : 14;
-    uint32_t _pattern4 : 4;
-
-    struct ScoreProxy
-    {
-        Pattern4Score &v;
-        bool           isOppo;
-
-        ScoreProxy &operator=(Score score)
-        {
-            if (isOppo)
-                v._scoreOppo = score;
-            else
-                v._scoreSelf = score;
-            return *this;
-        }
-        operator Score() const { return Score(isOppo ? v._scoreOppo : v._scoreSelf); }
-    };
-    ScoreProxy operator[](size_t idx)
-    {
-        assert(idx < 2);
-        return ScoreProxy {*this, idx != 0};
-    }
-    Score operator[](size_t idx) const
-    {
-        assert(idx < 2);
-        return Score(idx != 0 ? _scoreOppo : _scoreSelf);
-    }
-    Score          scoreSelf() const { return (Score)_scoreSelf; }
-    Score          scoreOppo() const { return (Score)_scoreOppo; }
-    Pattern4Score &operator=(Pattern4 pattern4) { return _pattern4 = pattern4, *this; }
-                   operator Pattern4() const { return Pattern4(_pattern4); }
-};
-static_assert(sizeof(Pattern4Score) == sizeof(int32_t));
 
 namespace Search {
 class Searcher;  // forward declaration
@@ -90,15 +48,13 @@ extern const std::string InternalConfig;
 
 // -------------------------------------------------
 // Model configs
-extern float         ScalingFactor;
-extern float         EvaluatorMarginWinLossScale;
-extern float         EvaluatorMarginWinLossExponent;
-extern float         EvaluatorMarginScale;
-extern float         EvaluatorDrawBlackWinRate;
-extern float         EvaluatorDrawRatio;
-extern Eval          EVALS[RULE_NB + 1][PCODE_NB];
-extern Eval          EVALS_THREAT[RULE_NB + 1][THREAT_NB];
-extern Pattern4Score P4SCORES[RULE_NB + 1][PCODE_NB];
+// (ScalingFactor and the EVALS/EVALS_THREAT/P4SCORES tables are declared in
+// eval/scoretables.h together with their query API)
+extern float EvaluatorMarginWinLossScale;
+extern float EvaluatorMarginWinLossExponent;
+extern float EvaluatorMarginScale;
+extern float EvaluatorDrawBlackWinRate;
+extern float EvaluatorDrawRatio;
 
 // -------------------------------------------------
 // General options
@@ -182,48 +138,6 @@ extern ::Database::OverwriteRule DatabaseOverwriteRule;
 extern int                       DatabaseOverwriteExactBias;
 extern int                       DatabaseOverwriteDepthBoundBias;
 extern int                       DatabaseQueryResultDepthBoundBias;
-
-// -------------------------------------------------
-// Eval/Score/Pattern4 Query
-
-/// Get table index for rule and color.
-constexpr int tableIndex(Rule r, Color c)
-{
-    return r + (r == Rule::RENJU ? c : 0);
-}
-
-/// Lookup eval table with color and pcode of rule R.
-inline Value getValueBlack(Rule R, PatternCode pcodeBlack, PatternCode pcodeWhite)
-{
-    Value valueBlack = (Value)EVALS[tableIndex(R, BLACK)][pcodeBlack];
-    Value valueWhite = (Value)EVALS[tableIndex(R, WHITE)][pcodeWhite];
-    return valueBlack - valueWhite;
-}
-
-/// Lookup pattern4 & score table with color and pcode of rule R.
-inline Pattern4Score getP4Score(Rule R, Color C, PatternCode pcode)
-{
-    return P4SCORES[tableIndex(R, C)][pcode];
-}
-
-/// Converts a evaluation value to winning rate (in [0, 1]) using current ScalingFactor.
-template <bool Strict = true>
-inline float valueToWinRate(Value eval)
-{
-    if (eval >= (Strict ? VALUE_MATE_IN_MAX_PLY : VALUE_EVAL_MAX))
-        return 1.0f;
-    if (eval <= (Strict ? VALUE_MATED_IN_MAX_PLY : VALUE_EVAL_MIN))
-        return 0.0f;
-    return 1.0f / (1.0f + ::expf(-float(eval) / ScalingFactor));
-}
-
-/// Converts a winning rate in [0, 1] to a evaluation value using current ScalingFactor.
-inline Value winRateToValue(float winRate)
-{
-    float valueF32 = ScalingFactor * ::logf(winRate / (1.0f - winRate));
-    valueF32       = std::clamp<float>(valueF32, VALUE_EVAL_MIN, VALUE_EVAL_MAX);
-    return Value(valueF32);
-}
 
 // -------------------------------------------------
 // Config loading & exporting

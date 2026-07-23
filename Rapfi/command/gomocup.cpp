@@ -1202,8 +1202,8 @@ void traceSearch()
     Value eval    = Evaluation::evaluate(board, options.rule);
     Value evalPOB = board.sideToMove() == BLACK ? eval : -eval;
     MESSAGEL("Static Eval[Black]: " << evalPOB << " (WDL " << std::fixed << std::setprecision(2)
-                                    << (Config::valueToWinRate(evalPOB) * 100.0f) << ", SF "
-                                    << std::setprecision(2) << Config::ScalingFactor << ")");
+                                    << (Evaluation::valueToWinRate(evalPOB) * 100.0f) << ", SF "
+                                    << std::setprecision(2) << Evaluation::ScalingFactor << ")");
 
     if (board.evaluator()) {
         auto  v     = board.evaluator()->evaluateValue(board);

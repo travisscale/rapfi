@@ -23,6 +23,7 @@
 #include "../core/types.h"
 #include "../game/board.h"
 
+#include <string>
 #include <vector>
 
 namespace Opening {

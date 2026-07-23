@@ -19,6 +19,7 @@
 #include "evaluator.h"
 
 #include "../game/board.h"
+#include "scoretables.h"
 
 #include <algorithm>
 #include <cmath>
@@ -43,7 +44,7 @@ ValueType::ValueType(float winLogits, float lossLogits, float drawLogits, bool a
         drawProb *= invSum;
     }
 
-    val = Config::winRateToValue(winningRate());
+    val = Evaluation::winRateToValue(winningRate());
 }
 
 ValueType ValueType::valueOfDrawWinRate(float drawWinRate, float newdrawProb)
@@ -94,7 +95,7 @@ void PolicyBuffer::applySoftmax(PolicyType temp)
 {
     // Find max computed policy
     PolicyType maxPolicy = std::numeric_limits<PolicyType>::lowest();
-    for (size_t i = 0; i < bufferSize; i++) {
+    for (int i = 0; i < bufferSize; i++) {
         if (computeFlag[i] && policy[i] > maxPolicy)
             maxPolicy = policy[i];
     }
@@ -102,14 +103,14 @@ void PolicyBuffer::applySoftmax(PolicyType temp)
     // Apply exponent function and sum
     PolicyType sumPolicy = 0;
     PolicyType invTemp   = 1.0f / temp;
-    for (size_t i = 0; i < bufferSize; i++) {
+    for (int i = 0; i < bufferSize; i++) {
         if (computeFlag[i])
             sumPolicy += policy[i] = std::exp((policy[i] - maxPolicy) * invTemp);
     }
 
     // Divide sum policy to normalize
     PolicyType invSumPolicy = 1 / sumPolicy;
-    for (size_t i = 0; i < bufferSize; i++) {
+    for (int i = 0; i < bufferSize; i++) {
         policy[i] *= invSumPolicy;
     }
 }

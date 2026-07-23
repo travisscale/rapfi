@@ -18,8 +18,8 @@
 
 #include "eval.h"
 
+#include "../config.h"
 #include "../game/board.h"
-#include "../search/searchthread.h"
 #include "evaluator.h"
 
 #include <algorithm>
@@ -66,7 +66,7 @@ int makeThreatMask(const StateInfo &st, Color self)
 template <Rule R>
 inline Value evaluateThreat(const StateInfo &st, Color self)
 {
-    return (Value)Config::EVALS_THREAT[Config::tableIndex(R, self)][makeThreatMask(st, self)];
+    return (Value)Evaluation::EVALS_THREAT[Evaluation::tableIndex(R, self)][makeThreatMask(st, self)];
 }
 
 /// Evaluates basic patterns on board.
@@ -79,7 +79,7 @@ inline Value evaluateBasic(const StateInfo &st, Color self)
 /// it falls outside alpha-beta window with this margin.
 inline int classicalEvalMargin(Value bound)
 {
-    float winLossRate = 2 * (Config::valueToWinRate(bound) - 0.5f);
+    float winLossRate = 2 * (Evaluation::valueToWinRate(bound) - 0.5f);
     float x           = Config::EvaluatorMarginWinLossScale * winLossRate;
     float x2          = x * x;
     return (int)(Config::EvaluatorMarginScale

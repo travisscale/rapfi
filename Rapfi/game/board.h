@@ -18,11 +18,11 @@
 
 #pragma once
 
-#include "../config.h"
 #include "../core/hash.h"
 #include "../core/platform.h"
 #include "../core/pos.h"
 #include "../core/types.h"
+#include "../eval/scoretables.h"
 #include "bitboard.h"
 #include "candarea.h"
 #include "pattern.h"
@@ -37,6 +37,9 @@ class SearchThread;
 }
 namespace Evaluation {
 class Evaluator;
+}
+namespace Config {
+extern CandidateRange DefaultCandidateRange;  // declared here to avoid the config.h include
 }
 
 /// Iterate `pos` over every on-board (non-wall) cell, in ascending Pos order.
@@ -132,8 +135,8 @@ struct Cell
     template <Rule R>
     void updatePattern4AndScore(PatternCode pcodeBlack, PatternCode pcodeWhite)
     {
-        Pattern4Score p4ScoreBlack = Config::getP4Score(R, BLACK, pcodeBlack);
-        Pattern4Score p4ScoreWhite = Config::getP4Score(R, WHITE, pcodeWhite);
+        Pattern4Score p4ScoreBlack = Evaluation::getP4Score(R, BLACK, pcodeBlack);
+        Pattern4Score p4ScoreWhite = Evaluation::getP4Score(R, WHITE, pcodeWhite);
         pattern4[BLACK]            = (Pattern4)p4ScoreBlack;
         pattern4[WHITE]            = (Pattern4)p4ScoreWhite;
         score[BLACK]               = p4ScoreBlack.scoreSelf() + p4ScoreWhite.scoreOppo();

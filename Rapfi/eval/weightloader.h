@@ -29,6 +29,8 @@
 #include <mutex>
 #include <type_traits>
 
+namespace Evaluation {
+
 /// Linear scan: does `c` contain a value equal to `elem`? Used by the weight loaders below to
 /// validate header fields (supported rules / board sizes) and model output names.
 template <typename Container, typename ElemType>
@@ -41,8 +43,6 @@ bool contains(const Container &c, ElemType elem)
     return false;
 }
 
-namespace Evaluation {
-
 /// Default empty loading args.
 struct EmptyLoadArgs
 {
@@ -50,6 +50,9 @@ struct EmptyLoadArgs
 };
 
 /// Base class for a weight loader.
+/// Loaders compose statically by wrapping (e.g. CompressedWrapper<StandardHeaderLoader<X>>),
+/// so this base is used as a concept that pins WeightType/LoadArgs; concrete loaders shadow
+/// load() rather than override it, and no loader is ever called through this base.
 /// @tparam WeightType The type of evaluator weight.
 template <typename WeightType_, typename LoadArgs_ = EmptyLoadArgs>
 struct WeightLoader
@@ -66,24 +69,6 @@ struct WeightLoader
     /// Whether this weight loader needs a binary stream.
     /// Default behaviour is true. Only used when loading from istream.
     virtual bool needsBinaryStream() const { return true; }
-};
-
-/// A weight loader for plain binary Data.
-template <typename WeightType_>
-struct PlainBinaryWeightLoader : WeightLoader<WeightType_>
-{
-    using typename WeightLoader<WeightType_>::WeightType;
-    using typename WeightLoader<WeightType_>::LoadArgs;
-
-    LargePagePtr<WeightType> load(std::istream &is, LoadArgs args) override
-    {
-        auto weight = make_unique_large_page<WeightType>();
-        is.read(reinterpret_cast<char *>(weight.get()), sizeof(WeightType));
-        if (is && is.peek() == std::ios::traits_type::eof())
-            return std::move(weight);
-        else
-            return nullptr;
-    }
 };
 
 /// Standard NNUE weight format header, contains common information about weights.
@@ -197,7 +182,7 @@ private:
     }
 };
 
-/// Weight loader warpper for compressed input stream.
+/// Weight loader wrapper for compressed input stream.
 template <typename BaseLoader>
 struct CompressedWrapper : BaseLoader
 {

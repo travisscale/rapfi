@@ -117,7 +117,7 @@ void SearchPrinter::printPvCompletes(MainSearchThread  &th,
             INFO("TOTALTIME", tc.elapsed());
             INFO("SPEED", speed);
             INFO("EVAL", curMove.value);
-            INFO("WINRATE", Config::valueToWinRate(curMove.value));
+            INFO("WINRATE", Evaluation::valueToWinRate(curMove.value));
             INFO("BESTLINE",
                  MovesText {curMove.pv, true, true, th.board->size(), Config::IOCoordMode});
             INFO("PV", "DONE");
@@ -263,7 +263,7 @@ void SearchPrinter::printBestmoveWithoutSearch(MainSearchThread &th,
         INFO("TOTALTIME", 0);
         INFO("SPEED", 0);
         INFO("EVAL", moveValue);
-        INFO("WINRATE", Config::valueToWinRate(moveValue));
+        INFO("WINRATE", Evaluation::valueToWinRate(moveValue));
         INFO("BESTLINE", MovesText {*pv, true, true, th.board->size(), Config::IOCoordMode});
         INFO("PV", "DONE");
     }

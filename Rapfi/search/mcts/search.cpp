@@ -16,6 +16,7 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "../../config.h"
 #include "../../core/iohelper.h"
 #include "../../eval/eval.h"
 #include "../../game/wincheck.h"
@@ -1188,7 +1189,7 @@ void MCTSSearcher::updateRootMovesData(MainSearchThread &th)
                 else if (Value up = childBound.childUpperBound(); up <= VALUE_MATED_IN_MAX_PLY)
                     rm->value = mated_in(std::max(mate_step(up, 0) - th.board->ply(), 0));
                 else
-                    rm->value = Config::winRateToValue(rm->winRate);
+                    rm->value = Evaluation::winRateToValue(rm->winRate);
                 rm->utilityStdev = std::sqrt(childNode->getQVar());
                 numSelectableRootMoves++;
             }

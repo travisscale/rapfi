@@ -18,6 +18,8 @@
 
 #include "argutils.h"
 
+#include "../config.h"
+
 #ifndef NO_COMMAND_MODULES
     #define CXXOPTS_NO_REGEX
     #include <cxxopts.hpp>

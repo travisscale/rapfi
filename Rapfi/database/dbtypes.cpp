@@ -18,7 +18,7 @@
 
 #include "dbtypes.h"
 
-#include "../config.h"
+#include "../eval/scoretables.h"
 #include "../core/utils.h"
 
 #include <map>
@@ -310,7 +310,7 @@ std::string DBRecord::displayLabel() const
         }
     }
     else if (label == LABEL_NONE && bound() == BOUND_EXACT) {
-        float winRate      = Config::valueToWinRate(Value(-value));
+        float winRate      = Evaluation::valueToWinRate(Value(-value));
         int   winRateLabel = std::clamp(int(winRate * 100), 0, 99);
 
         displayLabel = std::to_string(winRateLabel);

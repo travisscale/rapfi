@@ -106,7 +106,7 @@ struct OnnxModelArguments
     bool operator==(const OnnxModelArguments &other) const { return device == other.device; }
 };
 
-/// Warpper interface for an onnx session instance.
+/// Wrapper interface for an onnx session instance.
 class OnnxModel
 {
 public:
@@ -230,17 +230,11 @@ private:
 
     static Ort::Env &getGlobalEnvInstance()
     {
-        struct OrtEnvWarpper : Ort::Env
+        struct OrtEnvWrapper : Ort::Env
         {
-            enum {
-#ifdef NDEBUG
-                DefaultLoggingLevel = ORT_LOGGING_LEVEL_WARNING
-#else
-                DefaultLoggingLevel = ORT_LOGGING_LEVEL_WARNING
-#endif
-            };
+            enum { DefaultLoggingLevel = ORT_LOGGING_LEVEL_WARNING };
 
-            OrtEnvWarpper()
+            OrtEnvWrapper()
                 : Ort::Env(static_cast<OrtLoggingLevel>(DefaultLoggingLevel),
                            "",
                            ortLoggingFunction,
@@ -261,7 +255,7 @@ private:
                                 << code_location << "]: " << message);
             }
         };
-        static OrtEnvWarpper env;
+        static OrtEnvWrapper env;
         return env;
     }
 
@@ -411,8 +405,6 @@ public:
 
 private:
     static constexpr int64_t     BatchSize     = 1;
-    static constexpr const char *InputNames[]  = {"board_input", "global_input"};
-    static constexpr const char *OutputNames[] = {"value", "policy"};
 
     void runInference(OnnxModel &model)
     {

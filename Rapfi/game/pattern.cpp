@@ -18,7 +18,7 @@
 
 #include "pattern.h"
 
-#include "../config.h"
+#include "../eval/scoretables.h"
 #include "../core/utils.h"
 
 #include <array>
@@ -114,10 +114,10 @@ uint8_t     DEFENCERenju[KeyCnt<RENJU>][2];
     fillPattern2xLUT<STANDARD>(PATTERN2xStandard);
     fillPattern2xLUT<RENJU>(PATTERN2xRenju);
 
-    fillPattern4LUT<false>(Config::P4SCORES[FREESTYLE]);
-    fillPattern4LUT<false>(Config::P4SCORES[STANDARD]);
-    fillPattern4LUT<true>(Config::P4SCORES[RENJU + BLACK]);
-    fillPattern4LUT<false>(Config::P4SCORES[RENJU + WHITE]);
+    fillPattern4LUT<false>(Evaluation::P4SCORES[FREESTYLE]);
+    fillPattern4LUT<false>(Evaluation::P4SCORES[STANDARD]);
+    fillPattern4LUT<true>(Evaluation::P4SCORES[RENJU + BLACK]);
+    fillPattern4LUT<false>(Evaluation::P4SCORES[RENJU + WHITE]);
 
     fillDefenceLUT<FREESTYLE>(DEFENCE);
     fillDefenceLUT<STANDARD>(DEFENCEStandard);

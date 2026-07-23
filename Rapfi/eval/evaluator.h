@@ -68,6 +68,9 @@ private:
 /// AccLevel represents the accuracy level of the model's evaluation.
 /// Lower level means higher accuracy and slower evaluation speed,
 /// while higher level means lower accuracy and faster evaluation speed.
+/// Note: intentional scaffolding for future accuracy levels -- no evaluator
+/// consumes the level yet (mix10's small/large heads are the natural first
+/// consumer), so all implementations currently ignore it. Not dead code.
 enum AccLevel {
     ACC_LEVEL_BEST = 0,
     ACC_LEVEL_HIGH = 1,

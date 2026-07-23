@@ -171,7 +171,7 @@ void Board::newGame()
         c.updatePattern4AndScore<R>(pcode[BLACK], pcode[WHITE]);
         st.p4Count[BLACK][c.pattern4[BLACK]]++;
         st.p4Count[WHITE][c.pattern4[WHITE]]++;
-        valueBlack += c.valueBlack = Config::getValueBlack(R, pcode[BLACK], pcode[WHITE]);
+        valueBlack += c.valueBlack = Evaluation::getValueBlack(R, pcode[BLACK], pcode[WHITE]);
     }
     st.valueBlack = valueBlack;
     st.candArea   = CandArea();
@@ -275,7 +275,7 @@ void Board::move(Pos pos)
 
             if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
                 deltaValueBlack += c.valueBlack =
-                    Config::getValueBlack(R, pcode[BLACK], pcode[WHITE]);
+                    Evaluation::getValueBlack(R, pcode[BLACK], pcode[WHITE]);
             }
 
             st.p4Count[BLACK][c.pattern4[BLACK]]--;

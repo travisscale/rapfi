@@ -238,11 +238,16 @@ set(HEADERS
 	database/dbutils.h
     database/yxdbstorage.h
 
-    eval/crosscheck.h
     eval/eval.h
     eval/evaluator.h
     eval/mix9svqnnue.h
     eval/mix10nnue.h
+    eval/mixcommon.h
+    eval/scoretables.h
+    eval/simd/activation.h
+    eval/simd/isa.h
+    eval/simd/linear.h
+    eval/simd/vec.h
     eval/simdops.h
     eval/weightloader.h
 

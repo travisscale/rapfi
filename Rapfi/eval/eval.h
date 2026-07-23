@@ -18,8 +18,8 @@
 
 #pragma once
 
-#include "../config.h"
 #include "../core/types.h"
+#include "scoretables.h"
 
 class Board;
 

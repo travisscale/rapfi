@@ -107,18 +107,18 @@ void collectEvalCoeffs(Rule r, const Evaluation::EvalInfo &evalInfo, Collector c
 
         // Coefficient is scaled at 2x
         if (r == RENJU) {
-            collect(coeff[0][self] + coeff[1][self], 2, &Config::EVALS[r + self][pcode]);
-            collect(-coeff[0][oppo] - coeff[1][oppo], 2, &Config::EVALS[r + oppo][pcode]);
+            collect(coeff[0][self] + coeff[1][self], 2, &Evaluation::EVALS[r + self][pcode]);
+            collect(-coeff[0][oppo] - coeff[1][oppo], 2, &Evaluation::EVALS[r + oppo][pcode]);
         }
         else {
             collect(coeff[0][self] - coeff[0][oppo] + coeff[1][self] - coeff[1][oppo],
                     2,
-                    &Config::EVALS[r][pcode]);
+                    &Evaluation::EVALS[r][pcode]);
         }
     }
 
     // Collect threat eval coefficient
-    collect(1, 1, &Config::EVALS_THREAT[Config::tableIndex(r, self)][evalInfo.threatMask]);
+    collect(1, 1, &Evaluation::EVALS_THREAT[Evaluation::tableIndex(r, self)][evalInfo.threatMask]);
 }
 
 /// Collect coefficient from board pattern codes
@@ -134,8 +134,8 @@ void collectMoveScoreCoeffs(Rule r, const Board &board, Collector collect)
         collect(pos,
                 1,
                 1,
-                &Config::P4SCORES[Config::tableIndex(r, self)][c.pcode<BLACK>()],
-                &Config::P4SCORES[Config::tableIndex(r, oppo)][c.pcode<WHITE>()]);
+                &Evaluation::P4SCORES[Evaluation::tableIndex(r, self)][c.pcode<BLACK>()],
+                &Evaluation::P4SCORES[Evaluation::tableIndex(r, oppo)][c.pcode<WHITE>()]);
     }
 }
 
@@ -433,7 +433,7 @@ void Tuner::run(size_t epochs, std::function<void(TuningStatistic)> callback)
     std::cout << std::setprecision(std::min(std::numeric_limits<Float>::digits10, 7)) << std::fixed;
 
     // Search a new K or use previous K
-    Float K = Float(1.0) / Config::ScalingFactor;
+    Float K = Float(1.0) / Evaluation::ScalingFactor;
     if (config.usePreviousScalingFactor) {
         MESSAGEL("Use previous inv scaling factor = " << K);
     }
@@ -507,9 +507,10 @@ void Tuner::run(size_t epochs, std::function<void(TuningStatistic)> callback)
     MESSAGEL("Training completed in " << (totalElapsed / 1000) << " seconds.");
 }
 
-/// initParams() inits tuneParams according to their value in config. It also
-/// associates TuneParam index with its config address. Parameters loaded from
-/// config will be automatically saved back when Tuner is destroyed.
+/// initParams() inits tuneParams according to their value in the live
+/// Evaluation:: model tables. It also associates TuneParam index with its
+/// table address. Parameters loaded from the tables will be automatically
+/// saved back when Tuner is destroyed.
 void Tuner::initParams()
 {
     std::vector<int>                       ruleSetIdx;
@@ -528,19 +529,19 @@ void Tuner::initParams()
     for (int r : ruleSetIdx) {
         if (config.tuneEval) {
             addArrayParams<Eval>(
-                Config::EVALS[r],
+                Evaluation::EVALS[r],
                 [](const Eval &ev, size_t) { return TuneParam(ev); },
                 [](Eval &ev, size_t, TuneParam param) { ev = Eval(param); });
 
             addArrayParams<Eval>(
-                Config::EVALS_THREAT[r],
+                Evaluation::EVALS_THREAT[r],
                 [](const Eval &ev, size_t) { return TuneParam(ev); },
                 [](Eval &ev, size_t, TuneParam param) { ev = Eval(param); });
         }
 
         if (config.tuneMoveScore) {
-            addArrayParams<Pattern4Score, arraySize(Config::P4SCORES[0]), 2>(
-                Config::P4SCORES[r],
+            addArrayParams<Pattern4Score, arraySize(Evaluation::P4SCORES[0]), 2>(
+                Evaluation::P4SCORES[r],
                 [invScale   = 1.0 / config.moveScoreScale,
                  bias       = config.moveScoreBias,
                  randomInit = config.randomMoveScoreInit,

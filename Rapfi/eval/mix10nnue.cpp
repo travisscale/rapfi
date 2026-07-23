@@ -18,6 +18,8 @@
 
 #include "mix10nnue.h"
 
+#include "mixcommon.h"
+
 #include "../core/compressor.h"
 #include "../core/iohelper.h"
 #include "../core/platform.h"
@@ -30,27 +32,134 @@
 #include <cmath>
 #include <cstring>
 
+
+namespace Evaluation::mix10 {
+
+using namespace Evaluation;
+using namespace Evaluation::mixnet;
+
+constexpr uint32_t ArchHashBase  = 0xb53b0258;
+constexpr int      FeatureDim    = 64;
+constexpr int      FeatDWConvDim = 32;
+constexpr int      ValueDim      = 64;
+constexpr int      NumHeadBucket = 1;
+
+static_assert(FeatDWConvDim <= FeatureDim);
+static_assert(ValueDim <= FeatureDim);
+
+constexpr int PolicySInDim  = std::max(FeatDWConvDim / 2, 16);
+constexpr int PolicySOutDim = std::max(FeatDWConvDim / 4, 16);
+constexpr int PolicyLInDim  = std::max(FeatDWConvDim, 16);
+constexpr int PolicyLMidDim = std::max(FeatDWConvDim / 2, 16);
+constexpr int PolicyLOutDim = std::max(FeatDWConvDim / 4, 16);
+
+struct alignas(64) Weight
+{
+    // 1  mapping layer
+    int16_t mapping[2][ShapeNum][FeatureDim];
+
+    // 2  Depthwise conv
+    int16_t feature_dwconv_weight[9][FeatDWConvDim];
+    int16_t feature_dwconv_bias[FeatDWConvDim];
+
+    struct HeadBucket
+    {
+        // 3  Small Policy dynamic pointwise conv
+        FCWeight<ValueDim, ValueDim>                          policy_small_pwconv_weight_1;
+        FCWeight<PolicySOutDim *(PolicySInDim + 1), ValueDim> policy_small_pwconv_weight_2;
+
+        // 4  Large Policy dynamic pointwise conv
+        FCWeight<ValueDim, ValueDim>                           policy_large_pwconv_weight_0;
+        FCWeight<PolicyLMidDim *(PolicyLInDim + 1), ValueDim>  policy_large_pwconv_weight_1;
+        FCWeight<PolicyLOutDim *(PolicyLMidDim + 1), ValueDim> policy_large_pwconv_weight_2;
+
+        // 5  Small Value Head MLP (layer 1,2,3)
+        FCWeight<ValueDim, FeatureDim> value_small_l1;
+        FCWeight<ValueDim, ValueDim>   value_small_l2;
+        FCWeight<4, ValueDim>          value_small_l3;
+
+        // 6  Large Value Gate & Group MLP
+        char                               __padding_to_64bytes_0[48];
+        FCWeight<FeatureDim * 2, ValueDim> value_gate;
+        FCWeight<ValueDim, FeatureDim>     value_corner;
+        FCWeight<ValueDim, FeatureDim>     value_edge;
+        FCWeight<ValueDim, FeatureDim>     value_center;
+        FCWeight<ValueDim, ValueDim>       value_quad;
+
+        // 7  Large Value Head MLP (layer 1,2,3)
+        FCWeight<ValueDim, ValueDim * 5> value_l1;
+        FCWeight<ValueDim, ValueDim>     value_l2;
+        FCWeight<4, ValueDim>            value_l3;
+
+        // 8  Policy output linear
+        char  __padding_to_64bytes_1[48];
+        float policy_small_output_weight[PolicySOutDim];
+        float policy_large_output_weight[PolicyLOutDim];
+        float policy_small_output_bias;
+        float policy_large_output_bias;
+
+        char __padding_to_64bytes_2[56];
+    } buckets[NumHeadBucket];
+};
+
+// Make sure we have proper alignment for SIMD operations
+static_assert(offsetof(Weight, feature_dwconv_weight) % 64 == 0);
+static_assert(offsetof(Weight, buckets) % 64 == 0);
+static_assert(offsetof(Weight::HeadBucket, value_gate) % 64 == 0);
+static_assert(offsetof(Weight::HeadBucket, policy_small_output_weight) % 64 == 0);
+static_assert(offsetof(Weight::HeadBucket, policy_large_output_weight) % 64 == 0);
+static_assert(sizeof(Weight::HeadBucket) % 64 == 0);
+
+struct alignas(64) ValueSumType
+{
+    static constexpr int NGroup = 3;
+
+    std::array<int32_t, FeatureDim> global;
+    std::array<int32_t, FeatureDim> group[NGroup][NGroup];
+    std::array<int8_t, ValueDim>    small_value_feature;
+    std::array<int8_t, ValueDim>    large_value_feature;
+    bool                            small_value_feature_valid;
+    bool                            large_value_feature_valid;
+};
+
+// Make sure we have proper alignment for SIMD operations
+static_assert(offsetof(ValueSumType, global) % 64 == 0);
+static_assert(offsetof(ValueSumType, group) % 64 == 0);
+static_assert(offsetof(ValueSumType, small_value_feature) % 64 == 0);
+static_assert(offsetof(ValueSumType, large_value_feature) % 64 == 0);
+
+class Accumulator : private MixAccumulatorState<ValueSumType, FeatureDim, FeatDWConvDim>
+{
+public:
+    explicit Accumulator(int boardSize) : MixAccumulatorState(boardSize) {}
+
+    /// Init accumulator state to empty board.
+    void clear(const Weight &w);
+    /// Incrementally update the network state for a stone of pieceColor placed at (x, y).
+    void move(const Weight &w, Color pieceColor, int x, int y);
+    using MixAccumulatorState::undo;
+
+    void updateSharedSmallHead(const Weight &w);
+    void updateSharedLargeHead(const Weight &w);
+
+    /// Calculate value (win/loss/draw) and (relative) uncertainty of current network state.
+    std::tuple<float, float, float, float> evaluateValueSmall(const Weight &w);
+    /// Calculate value (win/loss/draw) and (relative) uncertainty of current network state.
+    std::tuple<float, float, float, float> evaluateValueLarge(const Weight &w);
+    /// Calculate policy value of current network state.
+    void evaluatePolicySmall(const Weight &w, PolicyBuffer &policyBuffer);
+    /// Calculate policy value of current network state.
+    void evaluatePolicyLarge(const Weight &w, PolicyBuffer &policyBuffer);
+
+private:
+    int getBucketIndex() { return 0; }
+};
+
+}  // namespace Evaluation::mix10
+
 namespace {
 
 using namespace Evaluation::mix10;
-
-constexpr auto Power3 = []() {
-    auto pow3 = std::array<int, 16> {};
-    for (size_t i = 0; i < pow3.size(); i++)
-        pow3[i] = power(3, i);
-    return pow3;
-}();
-
-constexpr int DX[4] = {1, 0, 1, 1};
-constexpr int DY[4] = {0, 1, -1, 1};
-
-// Max inner and outer point changes, indexed by board size
-constexpr int MaxInnerChanges[23] = {1,    6,     33,    102,   233,   446,   761,  1166,
-                                     1661, 2246,  2921,  3686,  4541,  5486,  6521, 7646,
-                                     8861, 10166, 11561, 13046, 14621, 16286, 18041};
-constexpr int MaxOuterChanges[23] = {5,     11,    33,    107,   293,   675,   1361,  2483,
-                                     3945,  5747,  7889,  10371, 13193, 16355, 19857, 23699,
-                                     27881, 32403, 37265, 42467, 48009, 53891, 60113};
 
 struct Mix10WeightLoader : WeightLoader<mix10::Weight>
 {
@@ -76,44 +185,14 @@ struct Mix10WeightLoader : WeightLoader<mix10::Weight>
 
     void read_compressed_mapping(std::istream &in, Weight &w)
     {
-        constexpr int      MappingBits   = 10;
-        constexpr uint64_t MappingMask   = (1 << MappingBits) - 1;
-        constexpr uint16_t ExtensionMask = 1 << (MappingBits - 1);
-        constexpr uint16_t ExtensionBits = ~static_cast<uint16_t>(MappingMask);
-
-        uint64_t u64val    = 0;
-        int      bits_left = 0;
-
+        // Both mapping tables are encoded as one continuous 10-bit packed stream
+        PackedSignedIntStream<10> stream;
         for (int mappingIdx = 0; mappingIdx < arraySize(w.mapping); mappingIdx++) {
             auto &mapping = w.mapping[mappingIdx];
 
             for (int i = 0; i < ShapeNum; i++)
-                for (int j = 0; j < FeatureDim; j++) {
-                    int16_t feature = 0;
-
-                    if (bits_left >= MappingBits) {
-                        uint16_t masked    = static_cast<uint16_t>(u64val & MappingMask);
-                        uint16_t extension = (masked & ExtensionMask) ? 0xfc00 : 0;
-                        feature            = static_cast<int16_t>(extension | masked);
-
-                        u64val >>= MappingBits;
-                        bits_left -= MappingBits;
-                    }
-                    else {
-                        uint64_t u64val2;
-                        in.read(reinterpret_cast<char *>(&u64val2), sizeof(u64val2));
-
-                        u64val |= u64val2 << bits_left;
-                        uint16_t masked    = static_cast<uint16_t>(u64val & MappingMask);
-                        uint16_t extension = (masked & ExtensionMask) ? 0xfc00 : 0;
-                        feature            = static_cast<int16_t>(extension | masked);
-
-                        u64val    = u64val2 >> (MappingBits - bits_left);
-                        bits_left = 64 - (MappingBits - bits_left);
-                    }
-
-                    mapping[i][j] = feature;
-                }
+                for (int j = 0; j < FeatureDim; j++)
+                    mapping[i][j] = stream.next(in);
         }
     }
 
@@ -159,21 +238,6 @@ struct Mix10WeightLoader : WeightLoader<mix10::Weight>
 
 static Evaluation::WeightRegistry<StandardHeaderLoader<Mix10WeightLoader>> WeightReg;
 
-constexpr int                   Alignment = simd::NativeAlignment;
-constexpr simd::InstructionType IT        = simd::NativeInstType;
-template <size_t Size, typename T>
-using Batch = simd::detail::VecBatch<Size, T, IT>;
-template <typename FT, typename TT>
-using Convert = simd::detail::VecCvt<FT, TT, IT>;
-using I8LS    = simd::detail::VecLoadStore<int8_t, Alignment, IT>;
-using I16LS   = simd::detail::VecLoadStore<int16_t, Alignment, IT>;
-using I32LS   = simd::detail::VecLoadStore<int32_t, Alignment, IT>;
-using F32LS   = simd::detail::VecLoadStore<float, Alignment, IT>;
-using I8Op    = simd::detail::VecOp<int8_t, IT>;
-using I16Op   = simd::detail::VecOp<int16_t, IT>;
-using I32Op   = simd::detail::VecOp<int32_t, IT>;
-using F32Op   = simd::detail::VecOp<float, IT>;
-
 template <bool SignedInput = false,
           bool NoReLU      = false,
           int  Divisor     = 128,
@@ -197,125 +261,6 @@ linearBlock(int8_t output[], const int8_t input[], const FCWeight<OutSize, InSiz
 }  // namespace
 
 namespace Evaluation::mix10 {
-
-Accumulator::Accumulator(int boardSize)
-    : boardSize(boardSize)
-    , outerBoardSize(boardSize + 2)
-    , currentVersion(-1)
-{
-    int nCells        = boardSize * boardSize;
-    int nInnerChanges = MaxInnerChanges[boardSize];
-    int nOuterChanges = MaxOuterChanges[boardSize];
-
-    valueSumTable          = MemAlloc::alignedArrayAlloc<ValueSumType, Alignment>(nCells + 1);
-    versionChangeNumTable  = new ChangeNum[nCells + 1];
-    versionInnerIndexTable = new uint16_t[(nCells + 1) * nCells];
-    versionOuterIndexTable = new uint16_t[(nCells + 2) * outerBoardSize * outerBoardSize];
-    indexTable             = new std::array<uint32_t, 4>[nInnerChanges];
-    mapSum = MemAlloc::alignedArrayAlloc<std::array<int16_t, FeatureDim>, Alignment>(nInnerChanges);
-    mapConv =
-        MemAlloc::alignedArrayAlloc<std::array<int16_t, FeatDWConvDim>, Alignment>(nOuterChanges);
-
-    // Compute group index based on board pos
-    std::fill_n(groupIndex, arraySize(groupIndex), 0);
-    int size1 = (boardSize / 3) + (boardSize % 3 == 2);
-    int size2 = (boardSize / 3) * 2 + (boardSize % 3 > 0);
-    for (int i = 0; i < boardSize; i++)
-        groupIndex[i] += (i >= size1) + (i >= size2);
-    // Setup version change num of the first layer (version 0)
-    versionChangeNumTable[0] = {uint16_t(boardSize * boardSize),
-                                uint16_t((boardSize + 2) * (boardSize + 2))};
-    // Setup the first layer of version index table to be identity mapping
-    for (int i = 0; i < nCells; i++)
-        versionInnerIndexTable[i] = i;
-    for (int i = 0; i < outerBoardSize * outerBoardSize; i++)
-        versionOuterIndexTable[i] = i;
-
-    // Init index table at the first layer (version 0)
-    initIndexTable();
-}
-
-Accumulator::~Accumulator()
-{
-    MemAlloc::alignedFree(valueSumTable);
-    delete[] versionChangeNumTable;
-    delete[] versionInnerIndexTable;
-    delete[] versionOuterIndexTable;
-    delete[] indexTable;
-    MemAlloc::alignedFree(mapSum);
-    MemAlloc::alignedFree(mapConv);
-}
-
-void Accumulator::initIndexTable()
-{
-    constexpr int length = 11;  // length of line shape
-    constexpr int half   = length / 2;
-
-    // Clear shape table
-    std::fill_n(&indexTable[0][0], 4 * boardSize * boardSize, 0);
-
-    /// Get an empty line encoding with the given boarder distance.
-    /// @param left The distance to the left boarder, in range [0, length/2].
-    /// @param right The distance to the right boarder, in range [0, length/2].
-    auto get_boarder_encoding = [=](int left, int right) -> uint32_t {
-        assert(0 <= left && left <= half);
-        assert(0 <= right && right <= half);
-
-        if (left == half && right == half)
-            return 0;
-        else if (right == half)  // (left < half)
-        {
-            uint32_t code      = 2 * Power3[length];
-            int      left_dist = half - left;
-            for (int i = 1; i < left_dist; i++)
-                code += 1 * Power3[length - i];
-            return code;
-        }
-        else  // (right < half && left <= half)
-        {
-            uint32_t code       = 1 * Power3[length];
-            int      left_dist  = half - left;
-            int      right_dist = half - right;
-            int      right_twos = std::min(left_dist, right_dist);
-            int      left_twos  = std::min(left_dist, right_dist - 1);
-
-            for (int i = 0; i < right_twos; i++)
-                code += 2 * Power3[i];
-            for (int i = 0; i < left_twos; i++)
-                code += 2 * Power3[length - 1 - i];
-
-            for (int i = right_twos; i < right_dist - 1; i++)
-                code += 1 * Power3[i];
-            for (int i = left_twos; i < left_dist - 1; i++)
-                code += 1 * Power3[length - 1 - i];
-
-            return code;
-        }
-    };
-
-    for (int y = 0; y < boardSize; y++)
-        for (int x = 0; x < boardSize; x++) {
-            auto &idxs   = indexTable[y * boardSize + x];
-            int   distx0 = std::min(x - 0, half);
-            int   distx1 = std::min(boardSize - 1 - x, half);
-            int   disty0 = std::min(y - 0, half);
-            int   disty1 = std::min(boardSize - 1 - y, half);
-
-            // DX[0]=1, DY[0]=0
-            idxs[0] = get_boarder_encoding(distx0, distx1);
-            // DX[1]=0, DY[1]=1
-            idxs[1] = get_boarder_encoding(disty0, disty1);
-            // DX[2]=1, DY[2]=-1
-            idxs[2] = get_boarder_encoding(std::min(distx0, disty1), std::min(distx1, disty0));
-            // DX[3]=1, DY[3]=1
-            idxs[3] = get_boarder_encoding(std::min(distx0, disty0), std::min(distx1, disty1));
-
-            assert(idxs[0] < ShapeNum);
-            assert(idxs[1] < ShapeNum);
-            assert(idxs[2] < ShapeNum);
-            assert(idxs[3] < ShapeNum);
-        }
-}
 
 void Accumulator::clear(const Weight &w)
 {
@@ -545,9 +490,6 @@ void Accumulator::move(const Weight &w, Color pieceColor, int x, int y)
                     auto convW      = I16LS::load(convWeightBase + b * ConvB::RegWidth);
                     auto deltaConvF = I16Op::sub(I16Op::mulhi(convW, newFeats[b]),
                                                  I16Op::mulhi(convW, oldFeats[b]));
-
-                    // auto deltaConvF = I16Op::sub(newFeats[b], oldFeats[b]);
-                    // deltaConvF      = I16Op::mulhi(convW, deltaConvF);
 
                     auto convPtr  = convBase + b * ConvB::RegWidth;
                     auto oldConvF = I16LS::load(convPtr);
@@ -942,48 +884,17 @@ Evaluator::Evaluator(int                   boardSize,
     : Evaluation::Evaluator(boardSize, rule)
     , weight {nullptr, nullptr}
 {
-    CompressedWrapper<StandardHeaderLoader<Mix10WeightLoader>> loader(
-        Compressor::Type::LZ4_DEFAULT);
-
-    if (boardSize > 22)
-        throw UnsupportedBoardSizeError(boardSize);
-
-    Time startTime     = now();
-    bool printLoadInfo = false;
-    loader.setHeaderValidator([&](StandardHeader header, auto &args) -> bool {
-        constexpr uint32_t ArchHash =
-            ArchHashBase ^ (((ValueDim / 8) << 16) | ((FeatDWConvDim / 8) << 8) | (FeatureDim / 8));
-        if (header.archHash != ArchHash)
-            throw IncompatibleWeightFileError("incompatible architecture in weight file.");
-
-        if (!contains(header.supportedRules, args.rule))
-            throw UnsupportedRuleError(args.rule);
-
-        if (!contains(header.supportedBoardSizes, args.boardSize))
-            throw UnsupportedBoardSizeError(args.boardSize);
-
-        if (Config::MessageMode != MsgMode::NONE) {
-            MESSAGEL("mix10 nnue: load weight from " << pathToConsoleString(args.weightPath));
-            printLoadInfo = true;
-        }
-        return true;
-    });
-
-    for (const auto &[weightSide, weightPath] : {
-             std::make_pair(BLACK, blackWeightPath),
-             std::make_pair(WHITE, whiteWeightPath),
-         }) {
-        weight[weightSide] = WeightReg.loadWeightFromFile(loader,
-                                                          weightPath,
-                                                          numaNodeId,
-                                                          {{}, boardSize, rule, weightPath});
-        if (!weight[weightSide])
-            throw std::runtime_error("failed to load nnue weight from "
-                                     + pathToConsoleString(weightPath));
-    }
-
-    if (printLoadInfo)
-        MESSAGEL("mix10 nnue: weight loaded in " << timeText(now() - startTime));
+    constexpr uint32_t ArchHash =
+        ArchHashBase ^ (((ValueDim / 8) << 16) | ((FeatDWConvDim / 8) << 8) | (FeatureDim / 8));
+    loadWeightPair<CompressedWrapper<StandardHeaderLoader<Mix10WeightLoader>>>(WeightReg,
+                                                                               weight,
+                                                                               "mix10 nnue",
+                                                                               ArchHash,
+                                                                               boardSize,
+                                                                               rule,
+                                                                               numaNodeId,
+                                                                               blackWeightPath,
+                                                                               whiteWeightPath);
 
     accumulator[BLACK] = std::make_unique<Accumulator>(boardSize);
     accumulator[WHITE] = std::make_unique<Accumulator>(boardSize);
@@ -1021,10 +932,10 @@ void Evaluator::afterUndo(const Board &board, Pos pos)
 
 ValueType Evaluator::evaluateValue(const Board &board, AccLevel level)
 {
-    Color self = board.sideToMove(), oppo = ~self;
+    Color self = board.sideToMove();
 
     // Apply all incremental update for both sides and calculate value
-    clearCache(self);
+    flushMoveCache(self);
     auto [win, loss, draw, _] = accumulator[self]->evaluateValueLarge(*weight[self]);
 
     return ValueType(win, loss, draw, true);
@@ -1035,45 +946,18 @@ void Evaluator::evaluatePolicy(const Board &board, PolicyBuffer &policyBuffer, A
     Color self = board.sideToMove();
 
     // Apply all incremental update and calculate policy
-    clearCache(self);
+    flushMoveCache(self);
     accumulator[self]->evaluatePolicyLarge(*weight[self], policyBuffer);
 }
 
-void Evaluator::clearCache(Color side)
+void Evaluator::flushMoveCache(Color side)
 {
-    constexpr Color opponentMap[4] = {WHITE, BLACK, WALL, EMPTY};
-
-    for (MoveCache &mc : moveCache[side]) {
-        if (side == WHITE) {
-            mc.oldColor = opponentMap[mc.oldColor];
-            mc.newColor = opponentMap[mc.newColor];
-        }
-
-        if (mc.oldColor == EMPTY)
-            accumulator[side]->move(*weight[side], mc.newColor, mc.x, mc.y);
-        else
-            accumulator[side]->undo();
-    }
-    moveCache[side].clear();
+    applyMoveCache(side, moveCache[side], *accumulator[side], *weight[side]);
 }
 
 void Evaluator::addCache(Color side, int x, int y, bool isUndo)
 {
-    Color oldColor = EMPTY;
-    Color newColor = side;
-    if (isUndo)
-        std::swap(oldColor, newColor);
-
-    MoveCache newCache {oldColor, newColor, (int8_t)x, (int8_t)y};
-
-    for (Color c : {BLACK, WHITE}) {
-        if (moveCache[c].empty() || !isContraryMove(newCache, moveCache[c].back()))
-            moveCache[c].push_back(newCache);
-        else
-            moveCache[c].pop_back();  // cancel out the last move cache
-
-        assert(moveCache[c].size() < boardSize * boardSize);
-    }
+    queueMoveCache(moveCache, side, x, y, isUndo, boardSize * boardSize);
 }
 
 }  // namespace Evaluation::mix10

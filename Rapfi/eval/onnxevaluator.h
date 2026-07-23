@@ -24,7 +24,7 @@
 
 namespace Evaluation::onnx {
 
-/// A warpper around onnx environment and session instance.
+/// A wrapper around onnx environment and session instance.
 class OnnxModel;
 
 /// Accumulator is used to track current board state and is responsible for converting
