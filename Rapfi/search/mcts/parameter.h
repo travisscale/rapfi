@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace Search::MCTS {
@@ -46,5 +47,12 @@ constexpr float LCBMinVisitProp            = 0.1f;
 
 constexpr float PolicyTemperature     = 0.90f;
 constexpr float RootPolicyTemperature = 1.05f;
+
+/// Estimated per-node overhead of a NodeTable entry beyond sizeof(Node):
+/// red-black-tree node bookkeeping (~32 B) plus allocator header (~16 B).
+constexpr size_t NodeTableEntryOverhead = 48;
+
+/// Estimated allocator header overhead of one EdgeArray heap allocation.
+constexpr size_t EdgeArrayAllocOverhead = 16;
 
 }  // namespace Search::MCTS

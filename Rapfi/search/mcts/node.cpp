@@ -85,7 +85,7 @@ void Node::setNonTerminal(float utility, float drawRate)
     n.store(1, std::memory_order_release);
 }
 
-bool Node::createEdges(MovePicker &movePicker)
+bool Node::createEdges(MovePicker &movePicker, std::atomic<size_t> *allocCounter)
 {
     Pos      moveList[MAX_MOVES];
     float    policyList[MAX_MOVES];
@@ -117,6 +117,8 @@ bool Node::createEdges(MovePicker &movePicker)
     // If we are not the one that sets the edge array, then we need to delete the temp edge array
     if (!suc)
         delete[] tempEdges;
+    else if (allocCounter)
+        allocCounter->fetch_add(edgeArrayFootprint(numEdges), std::memory_order_relaxed);
 
     return false;
 }

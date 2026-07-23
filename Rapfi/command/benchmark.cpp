@@ -83,9 +83,11 @@ EngineState saveEngineStateForBenckmark()
 void recoverEngineState(EngineState state)
 {
     Search::Engine.setNumThreads(state.threadNum);
-    Search::Engine.searcher()->setMemoryLimit(state.memoryLimitKB);
     Search::SearchCfg  = state.searchCfg;
     Config::GeneralCfg = state.generalCfg;
+    // setMemoryLimit reads SearchCfg knobs (MCTS budget split), so the
+    // config structs must be restored first.
+    Search::Engine.searcher()->setMemoryLimit(state.memoryLimitKB);
 }
 
 void Command::benchmark()

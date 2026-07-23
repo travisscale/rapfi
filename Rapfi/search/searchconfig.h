@@ -60,6 +60,10 @@ struct SearchConfig
     int numNodeTableShardsPowerOfTwo = 10;
     /// The ratio to decrase utility when child draw rate is high.
     float drawUtilityPenalty = 0.35f;
+    /// Maximum size of the VCF TT slice carved from the MCTS memory budget, in KiB.
+    int mctsVCFTTMaxSizeKB = 8192;
+    /// Divisor of the MCTS memory budget offered to the VCF TT (slice = budget / divisor).
+    int mctsVCFTTBudgetDivisor = 16;
 };
 
 /// TimeConfig groups the time-management knobs from "[search.timectl]".

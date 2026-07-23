@@ -345,6 +345,10 @@ void Config::readSearch(const cpptoml::table &t, PendingConfig &pending)
                                            .value_or(cfg.numNodeTableShardsPowerOfTwo);
     cfg.drawUtilityPenalty =
         t.get_as<double>("draw_utility_penalty").value_or(cfg.drawUtilityPenalty);
+    cfg.mctsVCFTTMaxSizeKB =
+        t.get_as<int>("mcts_vcf_tt_max_size_kb").value_or(cfg.mctsVCFTTMaxSizeKB);
+    cfg.mctsVCFTTBudgetDivisor =
+        t.get_as<int>("mcts_vcf_tt_budget_divisor").value_or(cfg.mctsVCFTTBudgetDivisor);
 
     // Read time management options
     if (auto tm = t.get_table("timectl")) {

@@ -21,6 +21,7 @@
 #include "../../core/pos.h"
 #include "../../core/types.h"
 #include "../movepick.h"
+#include "parameter.h"
 
 #include <atomic>
 #include <cassert>
@@ -174,9 +175,12 @@ public:
 
     /// Initializes the edges of this node from the given move picker.
     /// @param movePicker The move picker to generate the edges.
+    /// @param allocCounter If non-null, edgeArrayFootprint(numEdges) is added
+    ///   to it when this call wins the edge-array allocation race (a losing
+    ///   concurrent expansion adds nothing).
     /// @return Whether this node has no valid edges. If true,
     ///   this node is a terminal node that has been mated.
-    bool createEdges(MovePicker &movePicker);
+    bool createEdges(MovePicker &movePicker, std::atomic<size_t> *allocCounter = nullptr);
 
     /// Returns the graph hash key of this node.
     HashKey getHash() const { return hash; }
@@ -286,5 +290,18 @@ private:
     /// not a terminal node, this value is VALUE_NONE.
     Eval terminalValue;
 };
+
+/// Estimated heap footprint in bytes of one node stored in the node table.
+inline size_t nodeFootprint()
+{
+    return sizeof(Node) + NodeTableEntryOverhead;
+}
+
+/// Estimated heap footprint in bytes of the EdgeArray allocation made by
+/// Node::createEdges for the given number of edges.
+inline size_t edgeArrayFootprint(uint32_t numEdges)
+{
+    return sizeof(EdgeArray) + numEdges * sizeof(Edge) + EdgeArrayAllocOverhead;
+}
 
 }  // namespace Search::MCTS
