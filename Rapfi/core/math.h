@@ -54,6 +54,13 @@ constexpr uint64_t floorLog2(uint64_t x)
     return x == 1 ? 0 : 1 + floorLog2(x >> 1);
 }
 
+/// Ceiling of the base-2 logarithm of a positive integer, i.e. the smallest `e`
+/// with `2^e >= x`. `ceilLog2(1)` is 0. Undefined for `x == 0`.
+constexpr uint64_t ceilLog2(uint64_t x)
+{
+    return floorLog2(x) + !isPowerOfTwo(x);
+}
+
 /// Number of multisubsets of size `m` drawn from `n` kinds, i.e. `C(n + m - 1, m)`.
 /// Used to size the per-cell pattern combination table (m=4 directions).
 constexpr uint32_t combineNumber(uint32_t n, uint32_t m)

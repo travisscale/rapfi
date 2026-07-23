@@ -18,12 +18,12 @@
 
 #pragma once
 
-#include "../config.h"
 #include "../core/utils.h"
 #include "cache.h"
 #include "dbstorage.h"
 #include "dbtypes.h"
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -51,12 +51,14 @@ enum class OverwriteRule {
 };
 
 /// Checks whether new record satisfy the overwrite condition
-/// Both oldRecord and newRecord should have valid label, value, deoth, bound.
+/// Both oldRecord and newRecord should have valid label, value, depth, bound.
 bool checkOverwrite(const DBRecord &oldRecord,
                     const DBRecord &newRecord,
                     OverwriteRule   owRule,
-                    int             exactBias      = Config::DatabaseOverwriteExactBias,
-                    int             depthBoundBias = Config::DatabaseOverwriteDepthBoundBias);
+                    int             exactBias,
+                    int             depthBoundBias);
+/// Overload using the configured default biases (Config::DatabaseOverwrite*Bias).
+bool checkOverwrite(const DBRecord &oldRecord, const DBRecord &newRecord, OverwriteRule owRule);
 
 /// DBClient class is the interface for querying and saving results of positions.
 ///
@@ -78,7 +80,7 @@ public:
              DBRecordMask recordMask,
              size_t       dbCacheSize       = 0,
              size_t       dbRecordCacheSize = 0);
-    /// This will can sync() before destroying current database instance.
+    /// Writes back all unsaved records before destroying the client.
     ~DBClient();
 
     /// Returns the underlying database storage instance.
@@ -143,6 +145,19 @@ private:
     };
     LRUCacheTable<HashKey, EntryCache> dbCache;
 
+    /// Write an entry back to the storage backend if it holds unsaved changes.
+    void writeBackIfDirty(EntryCache &entryCache)
+    {
+        if (entryCache.dirty)
+            storage.set(entryCache.key, entryCache.record, mask);
+    }
+
+    /// Collector for dbCache.put() that writes evicted dirty entries back to storage.
+    auto evictedEntryCollector()
+    {
+        return [this](std::pair<HashKey, EntryCache> &&cache) { writeBackIfDirty(cache.second); };
+    }
+
     /// For read-only operations on db entries, we use a fast lookup table to reduce
     /// redundent database query. This table is index only by hash key.
     struct DBRecordCache
@@ -151,9 +166,11 @@ private:
         static constexpr HashKey NullKey = HashKey(-1);
 
         using KVType = std::pair<HashKey, DBRecord>;
-        DBRecordCache(size_t size) : table(size)
+        /// The size is rounded up to a power of two, as operator[] masks the hash
+        /// key with (size - 1). The size is user-settable through the config, so
+        /// an assert alone would corrupt lookups in release builds.
+        DBRecordCache(size_t size) : table(std::size_t(1) << ceilLog2(std::max<size_t>(size, 1)))
         {
-            assert(isPowerOfTwo(size));
             clear();
         }
         KVType &operator[](HashKey key) { return table[(uint32_t)key & (table.size() - 1)]; }

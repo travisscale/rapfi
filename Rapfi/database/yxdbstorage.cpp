@@ -24,6 +24,7 @@
 #include "../core/utils.h"
 #include "dbtypes.h"
 
+#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -81,14 +82,18 @@ YXDBStorage::YXDBStorage(std::filesystem::path filePath,
     MESSAGEL("DATABASE LOAD START " + pathToConsoleString(filePath));
 
     // Check LZ4 file magic to choose a compress type
-    int magic;
+    constexpr uint32_t LZ4FrameMagic = 0x184D2204;  // little-endian LZ4 frame magic number
+
+    // A failed read (file shorter than 4 bytes) leaves the stream failed, which the
+    // compressor stream check below turns into a DBStorageError.
+    uint32_t magic = 0;
     file.read(reinterpret_cast<char *>(&magic), sizeof(magic));
     file.seekg(0);
 
     {
         Compressor    compressor(static_cast<std::istream &>(file),
-                              magic == 0x184D2204 ? Compressor::Type::LZ4_DEFAULT
-                                                     : Compressor::Type::NO_COMPRESS);
+                              magic == LZ4FrameMagic ? Compressor::Type::LZ4_DEFAULT
+                                                        : Compressor::Type::NO_COMPRESS);
         std::istream *istreamPtr = compressor.openInputStream();
         if (!istreamPtr || !*istreamPtr)
             throw DBStorageError("Failed to open LZ4 compressed YXDB file "
@@ -202,23 +207,23 @@ YXDBStorage::Cursor YXDBStorage::scan(Cursor                                   c
 {
     std::shared_lock<std::shared_mutex> readerLock(mutex);
 
-    // Find the starting iterator at the cursor
-    auto it = recordsMap.begin();
-    for (size_t i = 0; i < cursor; i++) {
-        it++;
+    // Resume right after the last key of the previous batch (O(log n), and
+    // insertions/deletions between batches can not shift the scan position)
+    auto it = cursor ? recordsMap.upper_bound(cursor.lastKey) : recordsMap.begin();
 
-        if (it == recordsMap.end())
-            break;
-    }
-
+    bool  readAny = false;
+    DBKey lastKey;
     while (count > 0 && it != recordsMap.end()) {
-        out.emplace_back(DBKey(it->first), it->second);
+        lastKey = DBKey(it->first);
+        out.emplace_back(lastKey, it->second);
         it++;
         count--;
-        cursor++;
+        readAny = true;
     }
 
-    return it == recordsMap.end() ? Cursor(0) : cursor;
+    if (it == recordsMap.end())
+        return Cursor {};
+    return readAny ? Cursor {lastKey} : cursor;  // count == 0 call: position unchanged
 }
 
 void YXDBStorage::load(std::istream &is, bool ignoreCorrupted)
@@ -228,6 +233,13 @@ void YXDBStorage::load(std::istream &is, bool ignoreCorrupted)
 
     std::vector<int8_t> byteBuffer;
     byteBuffer.resize(1024);  // reserve initial space
+
+    // Read an int16 with memcpy, as value/depthbound sit at odd buffer offsets
+    auto readInt16At = [&byteBuffer](size_t offset) {
+        int16_t v;
+        std::memcpy(&v, &byteBuffer[offset], sizeof(v));
+        return v;
+    };
 
     bool              isUTF8       = false;  // Is this database UTF-8 encoded?
     const std::string utf8Metadata = "charset=\"UTF-8\"";
@@ -335,9 +347,8 @@ void YXDBStorage::load(std::istream &is, bool ignoreCorrupted)
                                   stones.release()),
             std::forward_as_tuple(DBRecord {
                 numRecordBytes > 0 ? static_cast<DBLabel>(byteBuffer[0]) : DBLabel(0),
-                numRecordBytes > 2 ? *reinterpret_cast<DBValue *>(&byteBuffer[1]) : DBValue(0),
-                numRecordBytes > 4 ? *reinterpret_cast<DBDepthBound *>(&byteBuffer[3])
-                                   : DBDepthBound(0),
+                numRecordBytes > 2 ? DBValue(readInt16At(1)) : DBValue(0),
+                numRecordBytes > 4 ? DBDepthBound(readInt16At(3)) : DBDepthBound(0),
                 numRecordBytes > 5
                     ? (isUTF8 ? std::string {reinterpret_cast<char *>(&byteBuffer[5]),
                                              static_cast<size_t>(numRecordBytes - 5)}

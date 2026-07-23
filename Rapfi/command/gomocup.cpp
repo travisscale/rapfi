@@ -519,13 +519,23 @@ void libToDatabase()
                                             << ", this might take a while...");
         auto          startTime = now();
         std::ifstream libStream(libPath, std::ios::binary);
-        size_t        writeCount = ::Database::importLibToDatabase(*Search::Threads.dbStorage(),
-                                                            libStream,
-                                                            options.rule,
-                                                            board ? board->size() : 15);
-        auto          endTime    = now();
-        MESSAGEL("Imported " << writeCount << " records from lib file using "
-                             << (endTime - startTime) << " ms.");
+        if (!libStream) {
+            ERRORL("Unable to open file " << pathToConsoleString(libPath) << " for reading.");
+            return;
+        }
+
+        try {
+            size_t writeCount = ::Database::importLibToDatabase(*Search::Threads.dbStorage(),
+                                                                libStream,
+                                                                options.rule,
+                                                                board ? board->size() : 15);
+            auto   endTime    = now();
+            MESSAGEL("Imported " << writeCount << " records from lib file using "
+                                 << (endTime - startTime) << " ms.");
+        }
+        catch (const std::exception &e) {
+            ERRORL("Failed to import lib file: " << e.what());
+        }
     }
 }
 
@@ -542,12 +552,17 @@ void databaseToLib()
             return;
         }
 
-        DBClient dbClient(*Search::Threads.dbStorage(), RECORD_MASK_ALL);
-        size_t   nodeCount =
-            ::Database::exportDatabaseToLib(dbClient, libStream, *board, options.rule);
-        auto endTime = now();
-        MESSAGEL("Exported " << nodeCount << " nodes to lib file using " << (endTime - startTime)
-                             << " ms.");
+        try {
+            DBClient dbClient(*Search::Threads.dbStorage(), RECORD_MASK_ALL);
+            size_t   nodeCount =
+                ::Database::exportDatabaseToLib(dbClient, libStream, *board, options.rule);
+            auto endTime = now();
+            MESSAGEL("Exported " << nodeCount << " nodes to lib file using "
+                                 << (endTime - startTime) << " ms.");
+        }
+        catch (const std::exception &e) {
+            ERRORL("Failed to export database to lib file: " << e.what());
+        }
     }
 }
 

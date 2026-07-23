@@ -55,7 +55,7 @@ struct StonePos
 ///     3. board height
 ///     4. stone positions
 ///     5. side to move (black=0, white=1)
-/// @return Negative if lhs < rhs; 0 if lhs > rhs; Positive if lhs > rhs.
+/// @return Negative if lhs < rhs; 0 if lhs == rhs; Positive if lhs > rhs.
 template <typename DBKey1, typename DBKey2>
 int databaseKeyCompare(const DBKey1 &lhs, const DBKey2 &rhs)
 {
@@ -66,12 +66,11 @@ int databaseKeyCompare(const DBKey1 &lhs, const DBKey2 &rhs)
     if (int diff = (int)lhs.boardHeight - (int)rhs.boardHeight; diff != 0)
         return diff;
 
-    size_t numBytesLhs       = 2 * ((size_t)lhs.numBlackStones + (size_t)lhs.numWhiteStones);
-    size_t numBytesRhs       = 2 * ((size_t)rhs.numBlackStones + (size_t)rhs.numWhiteStones);
-    size_t numBytesToCompare = std::min(numBytesLhs, numBytesRhs);
-    if (numBytesLhs != numBytesRhs)
-        return numBytesLhs - numBytesRhs;
-    if (int diff = std::memcmp(lhs.stones, rhs.stones, numBytesToCompare); diff != 0)
+    int numBytesLhs = 2 * ((int)lhs.numBlackStones + (int)lhs.numWhiteStones);
+    int numBytesRhs = 2 * ((int)rhs.numBlackStones + (int)rhs.numWhiteStones);
+    if (int diff = numBytesLhs - numBytesRhs; diff != 0)
+        return diff;
+    if (int diff = std::memcmp(lhs.stones, rhs.stones, numBytesLhs); diff != 0)
         return diff;
 
     return (int)lhs.sideToMove - (int)rhs.sideToMove;
@@ -182,6 +181,16 @@ struct DBKey
 /// Subclass of DBStorage should implement storage functionaility (read/write/flush).
 /// All operations on the db storage instance should be atmoic and thread-safe, so
 /// multiple reads/write is allowed for different threads at the same time.
+///
+/// Error-handling convention of the database module:
+///   1. Record operations are noexcept -- they may run on search threads.
+///      get/flush report success through their return value; set/del are
+///      best-effort and report nothing.
+///   2. Construction/loading of a concrete storage throws DBStorageError; the
+///      factory boundary (Config::createDefaultDBStorage) catches and reports,
+///      so a database that fails to open never half-exists.
+///   3. Tooling built on top (dbutils, renlib import/export) throws
+///      std::runtime_error; the command layer catches and reports.
 class DBStorage
 {
 public:
@@ -217,18 +226,33 @@ public:
     /// Return the number of entries in the database.
     virtual size_t size() noexcept = 0;
 
-    /// Cursor type indicates the current position in the database storage,
-    /// which can be used to scan the whole database.
-    using Cursor = size_t;
+    /// Cursor is an opaque token indicating the current scan position. A
+    /// default-constructed cursor starts from the beginning; a cursor returned
+    /// by scan() resumes after the last entry of the previous batch, and
+    /// converts to false once the whole database has been iterated.
+    /// Holding the position as a key (rather than an index) makes resumption
+    /// O(log n) and keeps a scan stable under concurrent writes: entries
+    /// inserted or deleted behind the cursor are simply not revisited.
+    struct Cursor
+    {
+        Cursor() = default;
+        explicit Cursor(const DBKey &lastKey) : lastKey(lastKey), valid(true) {}
+        explicit operator bool() const { return valid; }
+
+        /// Key of the last entry returned by the previous batch. Zero-initialized
+        /// while inactive so that copying an inactive cursor stays well-defined.
+        DBKey lastKey {};
+        bool  valid = false;  ///< False marks both the begin and the end sentinel.
+    };
     /// Iterate the entire database in an incremental way.
-    /// @param cursor The start position in the database. Pass a zero cursor means
-    ///     starting from the beginning of the database.
+    /// @param cursor The scan position to resume from. A default-constructed
+    ///     cursor starts from the beginning of the database.
     /// @param count The number of entries to get in this call.
     /// @param out The container for receiving iterated entries. Previous elements
     ///     in the container will be kept. The actual elements retrieved can be get
     ///     by comparaing the size before and after the scan.
-    /// @return Cursor that can be used for the next incremental scan, or the zero
-    ///     cursor which means all entries in the database have been iterated.
+    /// @return Cursor that can be used for the next incremental scan, which
+    ///     converts to false once all entries have been iterated.
     virtual Cursor
     scan(Cursor cursor, size_t count, std::vector<std::pair<DBKey, DBRecord>> &out) noexcept = 0;
 };

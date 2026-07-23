@@ -16,6 +16,7 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "../config.h"
 #include "../core/iohelper.h"
 #include "../core/utils.h"
 #include "../database/dbclient.h"
@@ -227,7 +228,8 @@ void printDBQuery(std::ostream &os, DBStorage &dbStorage, const DBKey &dbKey)
             os << "(null)";
         else if (dbRecord.label == LABEL_NONE)
             os << "(none)";
-        else if (std::isprint(dbRecord.label) && !std::isspace(dbRecord.label))
+        else if (std::isprint((unsigned char)dbRecord.label)
+                 && !std::isspace((unsigned char)dbRecord.label))
             os << (char)dbRecord.label;
         else
             os << '(' << (int)dbRecord.label << ')';
@@ -478,8 +480,14 @@ void Command::database(int argc, char *argv[])
 
             std::ifstream libStream(libPath, std::ios::binary);
             if (libStream.is_open() && libStream) {
-                size_t writeCount = importLibToDatabase(*dbStorage, libStream, rule, board->size());
-                MESSAGEL("Imported " << writeCount << " records from lib file " << libPath);
+                try {
+                    size_t writeCount =
+                        importLibToDatabase(*dbStorage, libStream, rule, board->size());
+                    MESSAGEL("Imported " << writeCount << " records from lib file " << libPath);
+                }
+                catch (const std::exception &e) {
+                    ERRORL("Failed to import lib file: " << e.what());
+                }
             }
             else
                 ERRORL("Failed to open lib file " << libPath);
@@ -492,12 +500,17 @@ void Command::database(int argc, char *argv[])
             std::ofstream libStream(libPath, std::ios::binary);
             if (libStream.is_open() && libStream) {
                 MESSAGEL("Exporting to lib file " << libPath << ", this might take a while...");
-                auto     startTime = now();
-                DBClient dbClient(*dbStorage, RECORD_MASK_ALL);
-                size_t   nodeCount = exportDatabaseToLib(dbClient, libStream, *board, rule);
-                auto     endTime   = now();
-                MESSAGEL("Exported " << nodeCount << " nodes to lib file " << libPath << " using "
-                                     << (endTime - startTime) << " ms.");
+                try {
+                    auto     startTime = now();
+                    DBClient dbClient(*dbStorage, RECORD_MASK_ALL);
+                    size_t   nodeCount = exportDatabaseToLib(dbClient, libStream, *board, rule);
+                    auto     endTime   = now();
+                    MESSAGEL("Exported " << nodeCount << " nodes to lib file " << libPath
+                                         << " using " << (endTime - startTime) << " ms.");
+                }
+                catch (const std::exception &e) {
+                    ERRORL("Failed to export database to lib file: " << e.what());
+                }
             }
             else
                 ERRORL("Failed to open lib file " << libPath);

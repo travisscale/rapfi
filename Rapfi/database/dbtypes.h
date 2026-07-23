@@ -22,7 +22,10 @@
 #include "../core/types.h"
 
 #include <algorithm>
+#include <cctype>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace Database {
 
@@ -31,15 +34,11 @@ enum DBLabel : int8_t {
     LABEL_NULL = 0,   /// Null record, default constructed, only stores key in database
     LABEL_NONE = -1,  /// Undetermined result
 
-    LABEL_RESULT_MARKS_BEGIN = 32,
-
     LABEL_FORCEMOVE = '!',  /// the forced move (will be used as root move if exist)
     LABEL_WIN       = 'w',  /// a winning position
     LABEL_LOSE      = 'l',  /// a losing position
     LABEL_DRAW      = 'd',  /// a draw position
     LABEL_BLOCKMOVE = 'x',  /// a blocked position (will not be considered in search)
-
-    LABEL_RESULT_MARKS_END = 127,
 };
 
 /// Return true if the label has a determined result.
@@ -48,9 +47,12 @@ constexpr bool isDeterminedLabel(DBLabel label)
     return label == LABEL_WIN || label == LABEL_LOSE || label == LABEL_DRAW;
 }
 
+/// Labels compare case-insensitively. Note the (unsigned char) casts: DBLabel is
+/// signed and LABEL_NONE is negative -- passing a negative value other than EOF
+/// to std::tolower is undefined behavior.
 inline bool operator==(DBLabel lhs, DBLabel rhs)
 {
-    return std::tolower(lhs) == std::tolower(rhs);
+    return std::tolower((unsigned char)lhs) == std::tolower((unsigned char)rhs);
 }
 inline bool operator!=(DBLabel lhs, DBLabel rhs)
 {

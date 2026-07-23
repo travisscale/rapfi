@@ -18,17 +18,16 @@
 
 #include "dbclient.h"
 
+#include "../config.h"
 #include "../game/board.h"
 #include "../game/scopedmove.h"
+#include "parallelwalk.h"
 
 #include <algorithm>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <set>
-#ifdef MULTI_THREADING
-    #include <thread>
-#endif
 
 namespace {
 
@@ -61,46 +60,6 @@ inline int mateRank(const DBRecord &record)
 {
     return std::abs((int)record.value) * 2 + (record.bound() == BOUND_EXACT);
 }
-
-/// Check if new value is more valuable the the old value
-/// @return true if newValue is more valuable; otherwise false.
-bool checkExactValue(DBValue oldValue, DBValue newValue)
-{
-    DBValue absOldValue = std::abs(oldValue);
-    DBValue absNewValue = std::abs(newValue);
-
-    if (absOldValue < VALUE_MATE_IN_MAX_PLY)
-        return true;  // For non-mate old value we always consider new value to be better
-    else if (absNewValue < VALUE_MATE_IN_MAX_PLY)
-        return false;  // Prefer to keep old mate score
-    else {
-        // Both value are mates:
-        // 1. If both value have the same sign, we choose the one with larger absolute.
-        // 2. If both value have different sign, we choose the newer one.
-        return (oldValue < 0) != (newValue < 0) || absNewValue > absOldValue;
-    }
-};
-
-/// Check if new record has a better value than old record.
-/// @return True if new record is better, otherwise false.
-bool checkNewRecordValue(const DBRecord &oldRecord, const DBRecord &newRecord)
-{
-    switch (newRecord.bound()) {
-    default: return false;
-    case BOUND_UPPER:
-        return newRecord.value <= VALUE_MATED_IN_MAX_PLY
-               && (oldRecord.bound() == BOUND_UPPER && newRecord.value < oldRecord.value
-                   || oldRecord.bound() == BOUND_NONE);
-    case BOUND_LOWER:
-        return newRecord.value >= VALUE_MATE_IN_MAX_PLY
-               && (oldRecord.bound() == BOUND_LOWER && newRecord.value > oldRecord.value
-                   || oldRecord.bound() == BOUND_NONE);
-    case BOUND_EXACT:
-        return std::abs(newRecord.value) > VALUE_MATE_IN_MAX_PLY
-               && (oldRecord.bound() != BOUND_EXACT
-                   || checkExactValue(oldRecord.value, newRecord.value));
-    }
-};
 
 /// @brief Iterate all parent keys of a DBKey.
 /// @tparam F the function to receive each parent key, the excluded stone pos and the
@@ -170,10 +129,36 @@ bool isKeyReferenced(DBStorage &storage, const DBKey &key, IsDeletedParentKeyPre
     return result;
 }
 
+/// Shared coordination state for one delChildren operation.
+///
+/// Concurrency model of delChildren: every worker thread walks the same game
+/// tree, each with its own board clone and a thread-specific permutation of the
+/// move order so threads spread over different subtrees. Work is claimed through
+/// the storage itself (a successful get on a not-yet-deleted key); the sets here
+/// only let threads cooperate on subtrees another thread has already claimed:
+///   - deletingKeys[ply] holds keys whose subtree deletion is in progress, so a
+///     thread finding its key already deleted can help delete the children
+///     instead of skipping them.
+///   - checkingKeys holds keys whose NoDeleteRecursive subtree check is in
+///     progress at the split boundary, so other threads skip the redundant walk.
+/// Both are cooperation hints, not correctness requirements: the claiming thread
+/// always finishes its own subtree. Tracking stops below MaxSplitPly since deep
+/// collisions are rare and set contention would outweigh the help.
+struct DeleteChildrenContext
+{
+    /// The deepest ply where deleting/checking subtrees are tracked for sharing.
+    static constexpr int MaxSplitPly = 4;
+
+    std::set<DBKey> deletingKeys[MaxSplitPly];
+    std::set<DBKey> checkingKeys;
+    std::mutex      mutex[MaxSplitPly + 1];  // [ply] guards deletingKeys[ply],
+                                             // [MaxSplitPly] guards checkingKeys
+};
+
 /// Delete all children of a board position from the database storage.
-/// @return The number of records deleted.
-template <bool ParentDeleted, int MaxSplitPly = 4>
-void recursiveDeleteChildren(DBStorage                                          &storage,
+template <bool ParentDeleted>
+void recursiveDeleteChildren(DeleteChildrenContext                              &ctx,
+                             DBStorage                                          &storage,
                              Board                                              &board,
                              Rule                                                rule,
                              const std::function<DBClient::DelType(DBRecord &)> &deleteFilter,
@@ -183,29 +168,21 @@ void recursiveDeleteChildren(DBStorage                                          
     if (board.movesLeft() == 0)
         return;
 
-    static std::set<DBKey> deletingKeys[MaxSplitPly];
-    static std::set<DBKey> checkingKeys;
-    static std::mutex      mutex[MaxSplitPly + 1];
+    constexpr int MaxSplitPly  = DeleteChildrenContext::MaxSplitPly;
+    auto &[deletingKeys, checkingKeys, mutex] = ctx;
 
     DBKey thisKey;
     if constexpr (ParentDeleted)
         thisKey = constructDBKey(board, rule);
 
-    // Find all potential children of this board position
+    // Find all potential children of this board position, spread over subtrees
     std::vector<Pos> toDeletePos;
     toDeletePos.reserve(board.movesLeft());
     FOR_EVERY_EMPTY_POS(&board, pos)
     {
         toDeletePos.push_back(pos);
     }
-
-    // Do permutation based on thread id
-    if (threadId > 0) {
-        for (size_t i = 0; i < toDeletePos.size(); i += (threadId + 1) / 2) {
-            size_t swapIndex = (i * (threadId + 1)) % toDeletePos.size();
-            std::swap(toDeletePos[i], toDeletePos[swapIndex]);
-        }
-    }
+    permuteForThread(toDeletePos, threadId);
 
     // Delete all children
     DBKey    key;
@@ -234,7 +211,8 @@ void recursiveDeleteChildren(DBStorage                                          
                     }
 
                     // Recursive check all children of this key
-                    recursiveDeleteChildren<true>(storage,
+                    recursiveDeleteChildren<true>(ctx,
+                                                  storage,
                                                   board,
                                                   rule,
                                                   deleteFilter,
@@ -269,7 +247,8 @@ void recursiveDeleteChildren(DBStorage                                          
                     }
 
                     // Find all children of this key and delete them
-                    recursiveDeleteChildren<false>(storage,
+                    recursiveDeleteChildren<false>(ctx,
+                                                   storage,
                                                    board,
                                                    rule,
                                                    nullptr,
@@ -295,7 +274,7 @@ void recursiveDeleteChildren(DBStorage                                          
 
             if (shouldDelete)
                 // Find all children of this key and delete them
-                recursiveDeleteChildren<false>(storage, board, rule, nullptr, threadId, ply + 1);
+                recursiveDeleteChildren<false>(ctx, storage, board, rule, nullptr, threadId, ply + 1);
         }
 
         board.undo(rule);
@@ -327,22 +306,57 @@ bool isDBKeySymmetry(const DBKey &key, TransformType transform)
     return true;
 }
 
+/// Maps board positions to the canonical position that serves as their board-text
+/// slot in records of a key: apply the key's canonicalizing transform, then fold
+/// with min over every transform the key is symmetric under (a symmetric key makes
+/// several positions equivalent, and the smallest one is the storage slot).
+/// Symmetry flags are precomputed at construction since isDBKeySymmetry is not
+/// cheap and one mapper is typically applied to many positions.
+class CanonicalPosMapper
+{
+public:
+    CanonicalPosMapper(const DBKey &key, int boardSize, TransformType keyTransform)
+        : boardSize(boardSize)
+        , keyTransform(keyTransform)
+    {
+        for (int t = IDENTITY + 1; t < TRANS_NB; t++)
+            isKeySymmetry[t] = isDBKeySymmetry(key, (TransformType)t);
+    }
+
+    Pos operator()(Pos pos) const
+    {
+        Pos canonicalPos = applyTransform(pos, boardSize, keyTransform);
+        for (int t = IDENTITY + 1; t < TRANS_NB; t++) {
+            if (isKeySymmetry[t]) {
+                Pos transformedPos = applyTransform(canonicalPos, boardSize, (TransformType)t);
+                canonicalPos       = std::min(canonicalPos, transformedPos);
+            }
+        }
+        return canonicalPos;
+    }
+
+private:
+    int           boardSize;
+    TransformType keyTransform;
+    bool          isKeySymmetry[TRANS_NB];
+};
+
 }  // namespace
 
 namespace Database {
 
 DBKey constructDBKey(const Board &board, Rule rule, TransformType *transType)
 {
-    DBKey    key[TRANS_NB];
-    StonePos whiteStones[TRANS_NB][MAX_MOVES];
-    for (int trans = IDENTITY; trans < TRANS_NB; trans++) {
-        key[trans].rule           = rule;
-        key[trans].boardWidth     = board.size();
-        key[trans].boardHeight    = board.size();
-        key[trans].sideToMove     = board.sideToMove();
-        key[trans].numBlackStones = 0;
-        key[trans].numWhiteStones = 0;
-    }
+    // Build the identity-transform key from the board's move history, then
+    // reduce it to the smallest key across all symmetries.
+    DBKey    key;
+    StonePos whiteStones[MAX_MOVES];
+    key.rule           = rule;
+    key.boardWidth     = board.size();
+    key.boardHeight    = board.size();
+    key.sideToMove     = board.sideToMove();
+    key.numBlackStones = 0;
+    key.numWhiteStones = 0;
 
     for (int ply = 0; ply < board.ply(); ply++) {
         Pos move = board.getHistoryMove(ply);
@@ -350,44 +364,20 @@ DBKey constructDBKey(const Board &board, Rule rule, TransformType *transType)
             continue;
 
         Color c = board.cell(move).piece;
-        if (c == BLACK) {
-            for (int trans = IDENTITY; trans < TRANS_NB; trans++) {
-                Pos transformedPos = applyTransform(move, board.size(), (TransformType)trans);
-                key[trans].stones[key[trans].numBlackStones++] = {transformedPos.x(),
-                                                                  transformedPos.y()};
-            }
-        }
-        else if (c == WHITE) {
-            for (int trans = IDENTITY; trans < TRANS_NB; trans++) {
-                Pos transformedPos = applyTransform(move, board.size(), (TransformType)trans);
-                whiteStones[trans][key[trans].numWhiteStones++] = {transformedPos.x(),
-                                                                   transformedPos.y()};
-            }
-        }
+        if (c == BLACK)
+            key.stones[key.numBlackStones++] = {move.x(), move.y()};
+        else if (c == WHITE)
+            whiteStones[key.numWhiteStones++] = {move.x(), move.y()};
     }
 
-    // Construct 8 symmetry database keys, and find the smallest one
-    int smallestIndex = 0;
+    std::sort(key.stones, key.stones + key.numBlackStones, std::less<StonePos>());
+    std::copy(whiteStones, whiteStones + key.numWhiteStones, key.stones + key.numBlackStones);
+    std::sort(key.stones + key.numBlackStones,
+              key.stones + key.numBlackStones + key.numWhiteStones,
+              std::less<StonePos>());
 
-    for (int trans = IDENTITY; trans < TRANS_NB; trans++) {
-        std::sort(key[trans].stones,
-                  key[trans].stones + key[trans].numBlackStones,
-                  std::less<StonePos>());
-        std::copy(whiteStones[trans],
-                  whiteStones[trans] + key[trans].numWhiteStones,
-                  key[trans].stones + key[trans].numBlackStones);
-        std::sort(key[trans].stones + key[trans].numBlackStones,
-                  key[trans].stones + key[trans].numBlackStones + key[trans].numWhiteStones,
-                  std::less<StonePos>());
-
-        if (trans != smallestIndex && key[trans] < key[smallestIndex])
-            smallestIndex = trans;
-    }
-
-    if (transType)
-        *transType = static_cast<TransformType>(smallestIndex);
-
-    return key[smallestIndex];
+    toSmallestDBKey(key, transType);
+    return key;
 }
 
 void toSmallestDBKey(DBKey &key, TransformType *transType)
@@ -474,6 +464,15 @@ bool checkOverwrite(const DBRecord &oldRecord,
     }
 }
 
+bool checkOverwrite(const DBRecord &oldRecord, const DBRecord &newRecord, OverwriteRule owRule)
+{
+    return checkOverwrite(oldRecord,
+                          newRecord,
+                          owRule,
+                          Config::DatabaseOverwriteExactBias,
+                          Config::DatabaseOverwriteDepthBoundBias);
+}
+
 DBClient::DBClient(DBStorage   &storage,
                    DBRecordMask recordMask,
                    size_t       dbCacheSize,
@@ -484,12 +483,10 @@ DBClient::DBClient(DBStorage   &storage,
     , dbRecordCache(std::max<size_t>(dbRecordCacheSize, 1))
 {}
 
-DBClient ::~DBClient()
+DBClient::~DBClient()
 {
-    for (auto &[hashKey, entryCache] : dbCache) {
-        if (entryCache.dirty)
-            storage.set(entryCache.key, entryCache.record, mask);
-    }
+    for (auto &[hashKey, entryCache] : dbCache)
+        writeBackIfDirty(entryCache);
 }
 
 bool DBClient::query(const Board &board, Rule rule, DBRecord &record)
@@ -510,15 +507,9 @@ bool DBClient::query(const Board &board, Rule rule, DBRecord &record)
     DBKey dbKey = constructDBKey(board, rule);
     if (storage.get(dbKey, record, mask)) {
         // Save a new entry cache in dbCache
-        dbCache.put(hashKey,
-                    EntryCache {dbKey, record, RECORD_MASK_NONE},
-                    [&](std::pair<HashKey, EntryCache> &&cache) {
-                        auto &&entryCache = cache.second;
-                        if (entryCache.dirty)
-                            storage.set(entryCache.key, entryCache.record, mask);
-                    });
+        dbCache.put(hashKey, EntryCache {dbKey, record, false}, evictedEntryCollector());
 
-        // Svae a new record cache in dbRecordCache
+        // Save a new record cache in dbRecordCache
         dbRecordCache[hashKey] = std::make_pair(hashKey, record);
 
         return true;
@@ -572,21 +563,12 @@ std::vector<std::pair<Pos, std::string>> DBClient::queryBoardTexts(const Board &
     // Find the smallest canonical pos considering symmetries to query board text
     TransformType parentTrans;
     DBKey         parentKey = constructDBKey(board, rule, &parentTrans);
-    bool          isParentSymmetry[TRANS_NB];
-    for (int t = IDENTITY + 1; t < TRANS_NB; t++)
-        isParentSymmetry[t] = isDBKeySymmetry(parentKey, (TransformType)t);
+    CanonicalPosMapper mapToCanonicalPos(parentKey, board.size(), parentTrans);
 
     // Map all empty pos into canonical pos, and get their board text
     std::vector<std::pair<Pos, std::string>> childBoardTexts;
     for (Pos pos : emptyPosList) {
-        // Find the smallest canonical considering all symmetries
-        Pos canonicalPos = applyTransform(pos, board.size(), parentTrans);
-        for (int t = IDENTITY + 1; t < TRANS_NB; t++) {
-            if (isParentSymmetry[t]) {
-                Pos transformedPos = applyTransform(canonicalPos, board.size(), (TransformType)t);
-                canonicalPos       = std::min(canonicalPos, transformedPos);
-            }
-        }
+        Pos canonicalPos = mapToCanonicalPos(pos);
 
         // Find the board text of this canonical pos
         auto itBegin = std::lower_bound(
@@ -625,14 +607,7 @@ void DBClient::setBoardText(const Board &board, Rule rule, Pos pos, std::string 
     // Find the smallest canonical pos considering symmetries to set board text
     TransformType parentTrans;
     DBKey         parentKey    = constructDBKey(board, rule, &parentTrans);
-    Pos           canonicalPos = applyTransform(pos, board.size(), parentTrans);
-    for (int t = IDENTITY + 1; t < TRANS_NB; t++) {
-        TransformType trans = (TransformType)t;
-        if (isDBKeySymmetry(parentKey, trans)) {
-            Pos tPos     = applyTransform(canonicalPos, board.size(), trans);
-            canonicalPos = std::min(canonicalPos, tPos);
-        }
-    }
+    Pos           canonicalPos = CanonicalPosMapper(parentKey, board.size(), parentTrans)(pos);
 
     record.setBoardText(canonicalPos, text);
     save(board, rule, record, OverwriteRule::Always);
@@ -683,13 +658,7 @@ bool DBClient::save(const Board &board, Rule rule, const DBRecord &record, Overw
     }
 
     if (overwrite) {
-        dbCache.put(hashKey,
-                    EntryCache {dbKey, record, true},
-                    [&](std::pair<HashKey, EntryCache> &&cache) {
-                        auto &&entryCache = cache.second;
-                        if (entryCache.dirty)
-                            storage.set(entryCache.key, entryCache.record, mask);
-                    });
+        dbCache.put(hashKey, EntryCache {dbKey, record, true}, evictedEntryCollector());
         dbRecordCache[hashKey] = std::make_pair(hashKey, record);
         return true;
     }
@@ -713,16 +682,7 @@ void DBClient::del(const Board &board, Rule rule)
         DBRecord parentRecord;
         if (storage.get(parentKey, parentRecord, RECORD_MASK_TEXT)) {
             Pos pos          = Pos {stonePos.x, stonePos.y};
-            Pos canonicalPos = applyTransform(pos, board.size(), parentTransform);
-
-            // Find the smallest canonical considering all symmetries
-            for (int t = IDENTITY + 1; t < TRANS_NB; t++) {
-                TransformType trans = (TransformType)t;
-                if (isDBKeySymmetry(parentKey, trans)) {
-                    Pos tPos     = applyTransform(canonicalPos, board.size(), trans);
-                    canonicalPos = std::min(canonicalPos, tPos);
-                }
-            }
+            Pos canonicalPos = CanonicalPosMapper(parentKey, board.size(), parentTransform)(pos);
 
             // Delete parent record's board text if found
             if (!parentRecord.boardText(canonicalPos).empty()) {
@@ -752,25 +712,10 @@ void DBClient::delChildren(const Board                       &board,
 {
     sync();  // clear all cached records first
 
-#if defined(MULTI_THREADING)
-    const size_t             numDeleteThreads = std::thread::hardware_concurrency();
-    std::vector<std::thread> threads;
-    threads.reserve(numDeleteThreads);
-
-    for (int i = 0; i < numDeleteThreads; i++) {
-        threads.emplace_back(
-            [this, rule, &deleteFilter, id = i](std::unique_ptr<Board> board) {
-                recursiveDeleteChildren<true>(storage, *board, rule, deleteFilter, id, 0);
-            },
-            std::make_unique<Board>(board, nullptr));
-    }
-
-    for (auto &th : threads)
-        th.join();
-#else
-    auto boardClone = std::make_unique<Board>(board, nullptr);
-    recursiveDeleteChildren<true>(storage, *boardClone, rule, deleteFilter, 0, 0);
-#endif
+    DeleteChildrenContext ctx;
+    parallelWalkOnBoardClones(board, [this, rule, &deleteFilter, &ctx](Board &board, int id) {
+        recursiveDeleteChildren<true>(ctx, storage, board, rule, deleteFilter, id, 0);
+    });
 
     DBRecord parentRecord;
     if (query(board, rule, parentRecord)) {
@@ -782,10 +727,8 @@ void DBClient::delChildren(const Board                       &board,
 void DBClient::sync(bool clearCache)
 {
     for (auto &[hashKey, entryCache] : dbCache) {
-        if (entryCache.dirty) {
-            storage.set(entryCache.key, entryCache.record, mask);
-            entryCache.dirty = false;
-        }
+        writeBackIfDirty(entryCache);
+        entryCache.dirty = false;
     }
 
     if (clearCache) {

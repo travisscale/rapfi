@@ -18,6 +18,7 @@
 
 #include "searchthread.h"
 
+#include "../config.h"
 #include "../core/iohelper.h"
 #include "../core/platform.h"
 #include "../game/board.h"

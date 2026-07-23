@@ -16,6 +16,7 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "../config.h"
 #include "../core/iohelper.h"
 #include "../core/utils.h"
 #include "../search/hashtable.h"

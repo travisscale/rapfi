@@ -47,11 +47,14 @@ size_t splitDatabase(DBStorage &dbSrc, DBStorage &dbDst, const Board &board, Rul
 
 /// Import a lib file into the database.
 /// @return The number of records (over)written.
+/// @note Throws std::runtime_error on malformed or truncated lib input
+///     (records imported before the error remain in the database).
 size_t
 importLibToDatabase(DBStorage &dbDst, std::istream &libStream, Rule rule, int boardSize = 15);
 
 /// Export database records to a lib file.
 /// @return The number of nodes written.
+/// @note Throws std::runtime_error if the board size is not supported.
 size_t
 exportDatabaseToLib(DBClient &dbClient, std::ostream &libStream, const Board &board, Rule rule);
 

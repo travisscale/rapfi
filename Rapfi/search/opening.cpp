@@ -18,6 +18,7 @@
 
 #include "opening.h"
 
+#include "../config.h"
 #include "../core/iohelper.h"
 #include "../game/board.h"
 #include "search.h"
