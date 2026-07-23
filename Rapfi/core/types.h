@@ -80,20 +80,22 @@ constexpr Color operator~(Color p)
 
 /// Single-direction line pattern at one cell, ordered roughly by threat strength.
 enum Pattern : uint8_t {
-    DEAD,  ///< X_.__X  - blocked on both sides, no five possible.
-    OL,    ///< OO.OOO  - one step before an overline (matters under STANDARD/RENJU).
-    B1,    ///< X.____  - one step before B2.
-    F1,    ///< X_.___  - one step before F2.
-    B2,    ///< XO.___  - one step before B3.
-    F2,    ///< _O__._  - one step before two F3.
-    F2A,   ///< _O_.__  - one step before three F3.
-    F2B,   ///< _O.___  - one step before four F3.
-    B3,    ///< XOO.__  - one step before B4.
-    F3,    ///< _OO_._  - one step before one F4.
-    F3S,   ///< __OO.__ - one step before two F4.
-    B4,    ///< XOOO._X - one step before F5.
-    F4,    ///< _OOO._X - one step before two F5.
-    F5,    ///< XOO.OOX - completes a five (wins, except overlines under STANDARD/RENJU).
+    DEAD,  ///< X_.__X    - blocked on both sides, no five possible.
+    OL,    ///< OO.OOO    - one step before an overline (matters under STANDARD/RENJU).
+    B1,    ///< X.____    - one step before B2.
+    F1,    ///< X_.___    - one step before F2.
+    B2,    ///< XO.___    - one step before B3.
+    F2,    ///< _O__._    - one step before two F3.
+    F2A,   ///< _O_.__    - one step before three F3.
+    F2B,   ///< _O.___    - one step before four F3.
+    B3,    ///< XOO.__    - one step before B4.
+    B3S,   ///< OO__.O__O - one step before B4S (can chain two forcing fours in-line).
+    F3,    ///< _OO_._    - one step before one F4.
+    F3S,   ///< __OO.__   - one step before two F4.
+    B4,    ///< XOOO._X   - one step before F5; the forced block spends the line.
+    B4S,   ///< OO_O.O_   - one step before F5; the forced block leaves another four.
+    F4,    ///< _OOO._X   - one step before two F5.
+    F5,    ///< XOO.OOX   - completes a five (wins, except overlines under STANDARD/RENJU).
     PATTERN_NB
 };
 

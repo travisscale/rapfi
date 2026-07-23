@@ -234,17 +234,20 @@ constexpr Pattern getPattern(PatternMemo<R> &patMemo, const Line<R> &line)
     // 3. fullLen <  5  -> dead (DEAD)
     // 4. otherwise, classify by what the empty points in the span become with one more self stone:
     //    a. >= 2 five-points       -> open four (F4)
-    //    b.    1 five-point        -> block four (B4)
+    //    b. exactly 1 five-point   -> block it (the reply is forced); if the blocked line
+    //                                 still classifies >= B3 (an in-line four-move remains)
+    //                                 -> chaining four (B4S), else -> block four (B4)
     //    c. >= 2 open-four-points  -> connected open three (F3S)
     //    d.    1 open-four-point   -> plain open three (F3)
-    //    e. a block-four-point     -> block three (B3)
-    //    f.    4 open-three-points -> connected open two (F2B)
-    //    g.    3 open-three-points -> jump open two (F2A)
-    //    h.    2 open-three-points -> wide-jump open two (F2)
-    //    i. a block-three-point    -> block two (B2)
-    //    j. an open-two-point      -> open one (F1)
-    //    k. a block-two-point      -> block one (B1)
-    //    l. none of the above      -> dead (DEAD)
+    //    e. a chaining-four-point  -> chaining block three (B3S)
+    //    f. a block-four-point     -> block three (B3)
+    //    g.    4 open-three-points -> connected open two (F2B)
+    //    h.    3 open-three-points -> jump open two (F2A)
+    //    i. 1-2 open-three-points  -> wide-jump open two (F2)
+    //    j. a block-three-point (B3 or B3S) -> block two (B2)
+    //    k. an open-two-point      -> open one (F1)
+    //    l. a block-two-point      -> block one (B1)
+    //    m. none of the above      -> dead (DEAD)
 
     constexpr auto Mid           = LineLen<R> / 2;
     constexpr bool CheckOverline = R == Rule::STANDARD || (R == Rule::RENJU && Side == BLACK);
@@ -293,12 +296,21 @@ constexpr Pattern getPattern(PatternMemo<R> &patMemo, const Line<R> &line)
                     p = OL;
             }
         }
-        else if (patCnt[F5])
-            p = B4;
+        else if (patCnt[F5] == 1) {
+            // The reply to a four is forced: block the unique five-point and see whether
+            // this line still holds a four-making move (a >= B3 classification means yes).
+            // Renju in-line legality falls out automatically: a continuation four that is
+            // itself an overline/double-four classifies as OL, which feeds no counted rung.
+            Line<R> blocked   = line;
+            blocked[f5Idx[0]] = OPPO;
+            p = getPattern<R, Side>(patMemo, blocked) >= B3 ? B4S : B4;
+        }
         else if (patCnt[F4] >= 2)
             p = F3S;
         else if (patCnt[F4])
             p = F3;
+        else if (patCnt[B4S])
+            p = B3S;
         else if (patCnt[B4])
             p = B3;
         else if (patCnt[F3S] + patCnt[F3] >= 4)
@@ -307,7 +319,7 @@ constexpr Pattern getPattern(PatternMemo<R> &patMemo, const Line<R> &line)
             p = F2A;
         else if (patCnt[F3S] + patCnt[F3])
             p = F2;
-        else if (patCnt[B3])
+        else if (patCnt[B3] + patCnt[B3S])
             p = B2;
         else if (patCnt[F2] + patCnt[F2A] + patCnt[F2B])
             p = F1;
@@ -340,6 +352,11 @@ Pattern4 getPattern4(Pattern p1, Pattern p2, Pattern p3, Pattern p4)
     n[p2]++;
     n[p3]++;
     n[p4]++;
+
+    // Stage-1 policy: Pattern4 does not distinguish chaining fours/threes; every rung
+    // below (including the renju Forbid checks) sees them as their parent class.
+    n[B4] += n[B4S];
+    n[B3] += n[B3S];
 
     if (n[F5] >= 1)
         return A_FIVE;  // OOOO_

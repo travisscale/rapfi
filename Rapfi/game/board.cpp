@@ -446,7 +446,8 @@ bool Board::checkForbiddenPoint(Pos pos) const
         if (fpCell.pattern2x[dir].patBlack == OL)
             return true;
         // Otherwise if it has at least two Four(B4/F4), it must be a true forbidden point.
-        else if (fpCell.pattern2x[dir].patBlack == B4 || fpCell.pattern2x[dir].patBlack == F4) {
+        else if (fpCell.pattern2x[dir].patBlack == B4 || fpCell.pattern2x[dir].patBlack == B4S
+                 || fpCell.pattern2x[dir].patBlack == F4) {
             if (++winByFour >= 2)
                 return true;
         }

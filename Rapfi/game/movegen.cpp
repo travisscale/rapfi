@@ -227,7 +227,7 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
     // Find all defend pos for double B3 attack line pattern (XOOO**_ + XOOO**_)
     auto findB3Defence = [=, &board](Pos f4Pos, int dir, ScoredMove *list) {
         const Cell &f4Cell = board.cell(f4Pos);
-        assert(f4Cell.pattern(oppo, dir) == B4);
+        assert(f4Cell.pattern(oppo, dir) == B4 || f4Cell.pattern(oppo, dir) == B4S);
 
         *list++ = f4Pos;
 
@@ -323,7 +323,8 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
         // If patterns in all directions are not F3, then the B_FLEX4 must
         // be formed by double B3 (in two direction or one direction).
         for (int dir = 0; dir < 4; dir++) {
-            if (attackCell.pattern(oppo, dir) != B3)
+            Pattern attackPattern = attackCell.pattern(oppo, dir);
+            if (attackPattern != B3 && attackPattern != B3S)
                 continue;
 
             int i, j, empty;
@@ -338,7 +339,7 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
                         Pattern pattern = c.pattern(oppo, dir);
                         if (pattern == F4)
                             return findF3LineDefence(pos, dir, last);
-                        else if (pattern == B4)
+                        else if (pattern == B4 || pattern == B4S)
                             return findB3Defence(pos, dir, last);
                     }
                     if (++empty >= 2)
@@ -358,7 +359,7 @@ ScoredMove *findFourDefence(const Board &board, ScoredMove *const moveList)
                         Pattern pattern = c.pattern(oppo, dir);
                         if (pattern == F4)
                             return findF3LineDefence(pos, dir, last);
-                        else if (pattern == B4)
+                        else if (pattern == B4 || pattern == B4S)
                             return findB3Defence(pos, dir, last);
                     }
                     continue;
@@ -485,7 +486,7 @@ ScoredMove *findB4F3Defence(const Board &board, ScoredMove *const moveList)
             if (const Cell &c = board.cell(pos); c.piece == oppo)
                 continue;
             else if (c.piece == EMPTY
-                     && (c.pattern(oppo, dir) == B4
+                     && (c.pattern(oppo, dir) == B4 || c.pattern(oppo, dir) == B4S
                          || R == RENJU && c.pattern4[oppo] == FORBID && checkRenjuF4(c, pos))) {
                 if (R == FREESTYLE || checkNotOverlineB4(c, pos))
                     return pos;
@@ -499,7 +500,7 @@ ScoredMove *findB4F3Defence(const Board &board, ScoredMove *const moveList)
             if (const Cell &c = board.cell(pos); c.piece == oppo)
                 continue;
             else if (c.piece == EMPTY
-                     && (c.pattern(oppo, dir) == B4
+                     && (c.pattern(oppo, dir) == B4 || c.pattern(oppo, dir) == B4S
                          || R == RENJU && c.pattern4[oppo] == FORBID && checkRenjuF4(c, pos)))
                 return pos;
             break;
@@ -556,7 +557,7 @@ ScoredMove *findB4F3Defence(const Board &board, ScoredMove *const moveList)
         Pattern pattern = B4F3Cell.pattern(oppo, dir);
         if (pattern == F3 || pattern == F3S)
             last = findF3LineDefence(B4F3Pos, dir, last);
-        else if (pattern == B4) {
+        else if (pattern == B4 || pattern == B4S) {
             Pos b4Pos = findB4InLine(B4F3Pos, dir);
 
             // If we have a B4 counter defence move, then direct defence
