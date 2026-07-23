@@ -136,6 +136,7 @@ int Command::tuning(int argc, char *argv[])
     std::vector<std::string> valDatasetPathList;
     std::vector<std::string> extensions;
     std::string              cacheValidation;
+    bool                     prepareOnly = false;
     std::unique_ptr<Dataset> trainDataset, valDataset;
 
     cxxopts::Options options("rapfi tuning");
@@ -179,6 +180,8 @@ int Command::tuning(int argc, char *argv[])
          "Prepared-cache validation mode (strict)",
          cxxopts::value<std::string>()->default_value("strict"))                 //
         ("rebuild-prepared-cache", "Bypass and replace a valid prepared cache")  //
+        ("prepare-only",
+         "Prepare and validate datasets/cache, report accepted sample counts, and exit")  //
         ("shard-size-mb",
          "Target size of each prepared shard in MiB",
          cxxopts::value<size_t>()->default_value(std::to_string(cfg.shardSizeMB)))  //
@@ -266,7 +269,10 @@ int Command::tuning(int argc, char *argv[])
             extensions          = args["dataset-file-extensions"].as<std::vector<std::string>>();
             outdir              = args["output"].as<std::string>();
             trainName           = args["name"].as<std::string>();
-            epochs              = args["epochs"].as<size_t>();
+            prepareOnly         = args.count("prepare-only");
+            epochs              = prepareOnly && !args.count("epochs")
+                                      ? 0
+                                      : args["epochs"].as<size_t>();
             modelExportInterval = args["export-interval"].as<size_t>();
             cfg.batchSize       = args["batchsize"].as<size_t>();
             cfg.maxTuneEntries  = args["max-entries"].as<size_t>();
@@ -304,7 +310,7 @@ int Command::tuning(int argc, char *argv[])
             cfg.scalingFactorMax         = args["scaling-factor-upper-bound"].as<double>();
             cfg.recomputeInterval        = args["recompute-interval"].as<size_t>();
 
-            validateConfig(epochs, cfg);
+            validateConfig(prepareOnly ? 1 : epochs, cfg);
         });
 
     try {
@@ -337,6 +343,27 @@ int Command::tuning(int argc, char *argv[])
 
         // Create tuner with dataset and tunerConfig
         Tuner tuner(*trainDataset, valDataset.get(), cfg);
+
+        if (prepareOnly) {
+            std::ofstream preparationFile(outpath / "preparation.json");
+            if (!preparationFile)
+                throw std::runtime_error("unable to open tuning preparation output");
+            preparationFile << "{\n"
+                            << "  \"SchemaVersion\": 1,\n"
+                            << "  \"TrainingAcceptedSamples\": "
+                            << tuner.trainingSampleCount() << ",\n"
+                            << "  \"ValidationAcceptedSamples\": "
+                            << tuner.validationSampleCount() << "\n"
+                            << "}\n";
+            preparationFile.flush();
+            if (!preparationFile)
+                throw std::runtime_error("failed to write tuning preparation output");
+            MESSAGEL("Preparation complete: training accepted samples = "
+                     << tuner.trainingSampleCount()
+                     << ", validation accepted samples = " << tuner.validationSampleCount()
+                     << ".");
+            return EXIT_SUCCESS;
+        }
 
         // Open and init statistic CSV file
         std::ofstream statFile(outpath / "stat.csv");

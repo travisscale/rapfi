@@ -608,6 +608,16 @@ Tuner::Tuner(Dataset &trainDataset, Dataset *valDataset, TuningConfig config)
     }
 }
 
+size_t Tuner::trainingSampleCount() const
+{
+    return trainFileCorpus ? trainFileCorpus->size() : trainTuneEntries.size();
+}
+
+size_t Tuner::validationSampleCount() const
+{
+    return valFileCorpus ? valFileCorpus->size() : valTuneEntries.size();
+}
+
 /// run() runs the tuner for specified epochs. After each epoch completed, callback will be called.
 void Tuner::run(size_t epochs, std::function<void(TuningStatistic)> callback)
 {

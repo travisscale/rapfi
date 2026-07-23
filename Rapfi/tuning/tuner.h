@@ -140,6 +140,8 @@ public:
 
     void run(size_t epochs, std::function<void(TuningStatistic)> callback = nullptr);
     void saveParams() const;
+    size_t trainingSampleCount() const;
+    size_t validationSampleCount() const;
 
 private:
     static constexpr size_t LogicalPartitions = 64;
