@@ -119,7 +119,7 @@ int main(int argc, char *argv[])
     switch (runMode) {
     case BENCHMARK: Command::benchmark(); break;
     case OPENGEN: Command::opengen(argc, argv); break;
-    case TUNING: Command::tuning(argc, argv); break;
+    case TUNING: return Command::tuning(argc, argv);
     case SELFPLAY: Command::selfplay(argc, argv); break;
     case DATAPREP: Command::dataprep(argc, argv); break;
     case DATABASE: Command::database(argc, argv); break;

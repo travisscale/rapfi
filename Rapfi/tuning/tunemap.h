@@ -39,6 +39,13 @@ constexpr auto defaultRange(T v) -> std::pair<T, T>
 
 /// A hyper-parameter tuning facility which records the mapping of a parameter name
 /// to its value reference, which are updated from the input options.
+///
+/// Usage model: the map is intentionally EMPTY at rest - there are no TUNE()
+/// registrations checked in. When tuning a knob, include tunemap.h at its
+/// definition site and add `TUNE(knob);` locally; values are then driven
+/// externally through the protocol hook (gomocup.cpp: TuneMap::init() at
+/// startup, TuneMap::tryReadOption() on INFO). Zero in-tree registrations is
+/// the normal resting state - this facility is live, not dead code.
 class TuneMap
 {
     using PostUpdateHook            = std::function<void()>;

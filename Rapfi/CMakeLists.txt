@@ -220,6 +220,7 @@ set(MODULE_SOURCES
     tuning/featureencoder.cpp
     tuning/numpywriter.cpp
     tuning/optimizer.cpp
+    tuning/tunecorpus.cpp
     tuning/tuner.cpp
 )
 
@@ -282,6 +283,7 @@ set(HEADERS
     tuning/featureencoder.h
     tuning/optimizer.h
     tuning/tunemap.h
+    tuning/tunecorpus.h
     tuning/tuner.h
 
     search/hashtable.h

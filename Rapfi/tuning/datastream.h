@@ -35,14 +35,14 @@ namespace Tuning {
 /// files open successfully and report EOF on the first read, so callers skip
 /// them with their regular end-of-file advance loop.
 ///
-/// Usage contract: the constructor opens every file (throwing on failure) and
-/// positions the stream at the first file, so stream() is valid immediately.
+/// Usage contract: the constructor validates every path, opens only the first
+/// file, and positions the stream there, so stream() is valid immediately.
 /// When a read hits EOF, call nextFile() and retry; nextFile() returns false
 /// once the file list is exhausted. reset() rewinds to the first file.
 class MultiFileInputStream
 {
 public:
-    /// Open all files of the dataset. The file list must not be empty.
+    /// Validate all dataset paths and open the first file. The list must not be empty.
     /// @throws std::runtime_error when a file cannot be opened.
     explicit MultiFileInputStream(const std::vector<std::string> &filenames);
     ~MultiFileInputStream();
@@ -68,7 +68,8 @@ public:
     void reset();
 
 private:
-    std::vector<std::ifstream>  files_;
+    std::vector<std::string>    filenames_;
+    std::ifstream               file_;
     size_t                      nextFileIdx_;
     std::unique_ptr<Compressor> compressor_;
     std::istream               *istream_;

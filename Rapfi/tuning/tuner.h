@@ -20,75 +20,23 @@
 
 #include "../core/pos.h"
 #include "../core/types.h"
-#include "../game/board.h"
+#include "tunecorpus.h"
 
-#include <array>
-#include <flat.hpp/flat_map.hpp>
+#include <BS_thread_pool.hpp>
 #include <functional>
 #include <unordered_map>
 #include <vector>
 
+class Board;
+
 namespace Tuning {
 
-typedef double Float;
-typedef Float  TuneParam;  // the numeric type used for parameter in tuning
+using Float        = double;  // stable scalar intermediates and global reductions
+using TuneParam    = float;   // high-cardinality parameter and optimizer state
+using TuneGradient = float;   // persistent/per-partition gradient storage
 
 /// LossType represents a type of loss function to use.
 enum class LossType { L1, L2, BCE };
-
-/// TuneCoeff struct is the coefficient for a tunable value.
-/// It represents an atomic term in the linear evaluation formula,
-/// for a TuneElement E: eval = ... + E.coeff * Param(index) + ...
-template <typename CoeffType = int16_t, typename IndexType = uint16_t>
-struct TuneCoeff
-{
-    CoeffType coeff;
-    IndexType index;
-};
-
-/// CoeffVec struct is a vector of coefficients C=(C0, C1, ..., Cn).
-/// @tparam Storage The underlying storage type of the coefficient vector.
-template <typename Storage>
-struct CoeffVec : Storage
-{
-    Float linearValue(const std::vector<TuneParam> &params) const;
-};
-/// DynamicCoeffVec is CoeffVec with dynamic storage.
-using DynamicCoeffVec = CoeffVec<std::vector<TuneCoeff<>>>;
-/// FixedCoeffVec is CoeffVec with fixed storage of Size.
-template <size_t Size>
-using FixedCoeffVec = CoeffVec<std::array<TuneCoeff<>, Size>>;
-
-/// TuneEntry struct contains all information needed to tune a position.
-struct TuneEntry
-{
-    static constexpr size_t CoeffScale = 8;
-
-    Float           result;  // win rate [0.0~1.0], 0=loss, 0.5=draw, 1=win
-    Value           staticEval;
-    Pos             bestMove;
-    DynamicCoeffVec evalCoeffs;
-    flat_hpp::flat_map<Pos, FixedCoeffVec<2>> scoreCoeffs;
-
-    TuneEntry(const struct DataEntry          &dataEntry,
-              const class Tuner               &tuner,
-              std::unordered_map<int, Board> &&boardObjectCache = {});
-
-    Float computeLinearEval(const std::vector<TuneParam> &params) const
-    {
-        return evalCoeffs.linearValue(params) * (Float(1) / CoeffScale);
-    }
-    template <bool UseTunedEval = true>
-    Float computeEvalLoss(const std::vector<TuneParam> &params, Float K, LossType loss) const;
-    Float computeMoveScoreLoss(const std::vector<TuneParam> &params, Float gamma) const;
-    void  computeEvalGradient(std::vector<Float>           &grads,
-                              const std::vector<TuneParam> &params,
-                              Float                         K,
-                              LossType                      loss) const;
-    void  computeMoveScoreGradient(std::vector<Float>           &grads,
-                                   const std::vector<TuneParam> &params,
-                                   Float                         gamma) const;
-};
 
 /// ParamGetter gets a TuneParam from a raw parameter given by an address and an offset.
 template <typename AddrType = void *>
@@ -111,11 +59,7 @@ struct ParamsSyncRecord
     ParamGetter<> getter;
     ParamSetter<> setter;
 
-    void       *operator[](size_t i) const { return static_cast<char *>(address) + elemSize * i; }
-    friend bool operator<(void *addr, const ParamsSyncRecord &record)
-    {
-        return addr < record.address;
-    }
+    void *operator[](size_t i) const { return static_cast<char *>(address) + elemSize * i; }
 };
 
 /// TuningConfig struct records all configuration settings used in Tuner
@@ -126,6 +70,8 @@ struct TuningConfig
 
     size_t   batchSize           = 8192;
     size_t   maxTuneEntries      = UINT32_MAX;
+    size_t   numThreads          = 0;
+    uint64_t seed                = 1;
     double   learningRate        = 0.01;
     double   weightDecay         = 0.0;
     double   moveScoreLossGamma  = 0.0;
@@ -182,20 +128,45 @@ public:
     void saveParams() const;
 
 private:
-    friend struct TuneEntry;
+    static constexpr size_t LogicalPartitions = 64;
 
     const TuningConfig            config;
-    std::vector<TuneEntry>        trainTuneEntries, valTuneEntries;
+    PreparedCorpus                trainTuneEntries, valTuneEntries;
+    std::vector<uint32_t>         trainSampleOrder;
     std::vector<TuneParam>        tuneParams;
     std::vector<ParamsSyncRecord> syncRecords;
+    struct ParameterAddress
+    {
+        ParameterId baseIndex;
+        uint32_t    parameterCount;
+    };
+    std::unordered_map<const void *, ParameterAddress> paramIndices;
+    std::vector<std::vector<TuneGradient>> partitionGradients;
+    /// Worker pool for dataset transformation and loss/gradient computation.
+    /// mutable: the const loss-computation methods submit tasks through it.
+    mutable BS::thread_pool threadPool;
+
+    struct CompileScratch
+    {
+        std::vector<TuneCoeff>       evalTerms;
+        std::vector<PolicyCandidate> policyCandidates;
+    };
 
     void  initParams();
-    void  initTuneEntries(std::vector<TuneEntry> &tuneEntries, class Dataset &dataset);
+    void  initTuneEntries(PreparedCorpus &tuneEntries,
+                          class Dataset  &dataset,
+                          bool            buildShuffleOrder);
+    void  appendTuneSample(PreparedCorpus &tuneEntries,
+                           const Board    &board,
+                           Rule            rule,
+                           uint8_t         resultTimesTwo,
+                           Pos             bestMove,
+                           CompileScratch &scratch) const;
     Float searchOptimalInvScalingFactor() const;
     template <bool UseTunedEval = true>
     Float computeEvaluationLoss(Float K, bool validation) const;
     Float computeMoveScoreLoss(bool validation) const;
-    void  computeGradientBatch(std::vector<Float> &grads, Float K, size_t batchIdx);
+    void  computeGradientBatch(std::vector<TuneGradient> &grads, Float K, size_t batchIdx);
 
     void   addParams(void         *address,
                      size_t        numElems,
@@ -203,7 +174,7 @@ private:
                      uint32_t      paramPerElem,
                      ParamGetter<> getter,
                      ParamSetter<> setter);
-    size_t paramIndex(void *address, size_t offset = 0) const;
+    ParameterId paramIndex(const void *address, size_t offset = 0) const;
 
     /* helper functions to add typed params to synced tune params */
 

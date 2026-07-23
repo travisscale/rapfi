@@ -69,7 +69,7 @@ bool loadModelFromFile(std::filesystem::path modelPath);
 void gomocupLoop();
 void benchmark();
 void opengen(int argc, char *argv[]);
-void tuning(int argc, char *argv[]);
+int tuning(int argc, char *argv[]);
 void selfplay(int argc, char *argv[]);
 void dataprep(int argc, char *argv[]);
 void database(int argc, char *argv[]);

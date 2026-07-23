@@ -20,6 +20,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <stdexcept>
 
 namespace Tuning {
 
@@ -35,10 +36,11 @@ AdamOptimizer<T>::AdamOptimizer(std::size_t numParams,
     , beta1(beta1)
     , beta2(beta2)
     , epsilon(epsilon)
-    , t(0)
+    , stepCount(0)
 {
     m.resize(numParams);
     v.resize(numParams);
+    nextParams.resize(numParams);
 }
 
 template <typename T>
@@ -48,17 +50,31 @@ void AdamOptimizer<T>::step(std::vector<T> &params, const std::vector<T> &gradie
     assert(numParams == m.size());
     assert(numParams == gradients.size());
 
-    t += T(1.0);
+    stepCount++;
+
+    // Bias correction is constant for every parameter in this step. Computing
+    // these powers inside the parameter loop is particularly expensive for the
+    // large policy table, and some compilers do not hoist std::pow themselves.
+    const double biasCorrection1 = 1.0 - std::pow(double(beta1), double(stepCount));
+    const double biasCorrection2 = 1.0 - std::pow(double(beta2), double(stepCount));
 
     for (size_t i = 0; i < numParams; i++) {
         m[i] = beta1 * m[i] + (T(1.0) - beta1) * gradients[i];
         v[i] = beta2 * v[i] + (T(1.0) - beta2) * gradients[i] * gradients[i];
 
-        T m_corr = m[i] / (T(1.0) - std::pow(beta1, t));
-        T v_corr = v[i] / (T(1.0) - std::pow(beta2, t));
+        T m_corr = T(double(m[i]) / biasCorrection1);
+        T v_corr = T(double(v[i]) / biasCorrection2);
 
-        params[i] -= lr * (m_corr / (std::sqrt(v_corr) + epsilon) + weightDecay * params[i]);
+        T nextParam =
+            params[i] - lr * (m_corr / (std::sqrt(v_corr) + epsilon) + weightDecay * params[i]);
+        if (!std::isfinite(m[i]) || !std::isfinite(v[i]) || !std::isfinite(nextParam))
+            throw std::runtime_error("Adam produced a non-finite optimizer state");
+        nextParams[i] = nextParam;
     }
+
+    // Publish the complete update only after every candidate parameter passed
+    // validation. A failed step cannot expose a partially updated vector.
+    params.swap(nextParams);
 }
 
 }  // namespace Tuning

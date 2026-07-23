@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
 namespace Tuning {
@@ -38,11 +39,11 @@ public:
     T currentLR() const { return lr; }
 
 private:
-    std::vector<T> m, v;
+    std::vector<T> m, v, nextParams;
     T              lr, weightDecay;
     T              beta1, beta2;
     T              epsilon;
-    T              t;
+    std::size_t    stepCount;
 };
 
 }  // namespace Tuning

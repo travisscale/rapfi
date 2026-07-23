@@ -26,20 +26,19 @@
 namespace Tuning {
 
 MultiFileInputStream::MultiFileInputStream(const std::vector<std::string> &filenames)
-    : nextFileIdx_(0)
+    : filenames_(filenames)
+    , nextFileIdx_(0)
     , istream_(nullptr)
 {
-    if (filenames.empty())
+    if (filenames_.empty())
         throw std::runtime_error("no file in dataset");
 
-    files_.reserve(filenames.size());
-    for (const std::string &filename : filenames) {
+    // Preserve the old fail-fast constructor contract without retaining one
+    // file handle and stream buffer for every source file.
+    for (const std::string &filename : filenames_) {
         std::ifstream fileStream(filename, std::ios::binary);
         if (!fileStream.is_open())
             throw std::runtime_error("unable to open file " + filename);
-
-        fileStream.exceptions(std::istream::badbit | std::istream::failbit);
-        files_.push_back(std::move(fileStream));
     }
 
     nextFile();
@@ -50,33 +49,47 @@ MultiFileInputStream::~MultiFileInputStream() = default;
 
 bool MultiFileInputStream::nextFile()
 {
-    if (nextFileIdx_ == files_.size())
+    if (nextFileIdx_ == filenames_.size())
         return false;
 
-    // Delete the previous compressor (if any) before rebinding to the next file
-    if (compressor_) {
-        istream_ = nullptr;
-        compressor_.reset();
+    // Delete the previous decompressor before closing the stream it references.
+    istream_ = nullptr;
+    compressor_.reset();
+    if (file_.is_open()) {
+        file_.exceptions(std::ios::goodbit);
+        file_.close();
     }
+    file_.clear();
 
-    // Probe the LZ4 frame magic. A zero-byte file skips the probe (the read would
-    // throw, as the streams have failbit exceptions enabled; peek only sets eofbit)
-    // and is treated as an uncompressed stream, which yields EOF on the first read
-    // and gets skipped by the caller's end-of-file advance loop.
-    int magic = 0;
-    if (files_[nextFileIdx_].peek() != std::ifstream::traits_type::eof()) {
-        files_[nextFileIdx_].read(reinterpret_cast<char *>(&magic), sizeof(magic));
-        files_[nextFileIdx_].seekg(0);
+    const std::string &filename = filenames_[nextFileIdx_];
+    file_.open(filename, std::ios::binary);
+    if (!file_.is_open())
+        throw std::runtime_error("unable to open file " + filename);
+    file_.exceptions(std::istream::badbit | std::istream::failbit);
+
+    try {
+        // Probe the LZ4 frame magic. A zero-byte file skips the probe (the read
+        // would throw, while peek only sets eofbit) and is treated as an
+        // uncompressed stream that the caller will skip normally.
+        int magic = 0;
+        if (file_.peek() != std::ifstream::traits_type::eof()) {
+            file_.read(reinterpret_cast<char *>(&magic), sizeof(magic));
+            file_.seekg(0);
+        }
+
+        compressor_ = std::make_unique<Compressor>(
+            file_,
+            magic == 0x184D2204 ? Compressor::Type::LZ4_DEFAULT
+                                : Compressor::Type::NO_COMPRESS);
+        istream_ = compressor_->openInputStream();
+        nextFileIdx_++;
     }
-
-    compressor_ = std::make_unique<Compressor>(
-        files_[nextFileIdx_],
-        magic == 0x184D2204 ? Compressor::Type::LZ4_DEFAULT : Compressor::Type::NO_COMPRESS);
-    istream_ = compressor_->openInputStream();
-    nextFileIdx_++;
+    catch (const std::exception &e) {
+        throw std::runtime_error("unable to open dataset stream " + filename + ": " + e.what());
+    }
 
     if (!istream_)
-        throw std::runtime_error("unable to open dataset stream");
+        throw std::runtime_error("unable to open dataset stream " + filename);
 
     return true;
 }
@@ -84,12 +97,12 @@ bool MultiFileInputStream::nextFile()
 void MultiFileInputStream::reset()
 {
     istream_ = nullptr;
-    if (compressor_)
-        compressor_.reset();
-    for (std::ifstream &fs : files_) {
-        fs.clear();  // drop any eof/fail state before rewinding
-        fs.seekg(0);
+    compressor_.reset();
+    if (file_.is_open()) {
+        file_.exceptions(std::ios::goodbit);
+        file_.close();
     }
+    file_.clear();
     nextFileIdx_ = 0;
     nextFile();
 }

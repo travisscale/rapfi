@@ -26,6 +26,7 @@
 
 #define CXXOPTS_NO_REGEX
 #include <ctime>
+#include <cmath>
 #include <cxxopts.hpp>
 #include <filesystem>
 #include <fstream>
@@ -63,16 +64,31 @@ void validateConfig(size_t epochs, const TuningConfig &cfg)
         throw std::invalid_argument("epochs must be greater than 0");
     if (!(cfg.tuneRule[FREESTYLE] || cfg.tuneRule[STANDARD] || cfg.tuneRule[RENJU]))
         throw std::invalid_argument("there must be at least one rule to tune");
+    if (!(cfg.tuneEval || cfg.tuneMoveScore))
+        throw std::invalid_argument("at least one tuning objective must be enabled");
     if (cfg.batchSize < 1)
         throw std::invalid_argument("batchsize must be greater than 0");
-    if (cfg.moveScoreLossGamma < 0)
+    if (!std::isfinite(cfg.learningRate) || cfg.learningRate <= 0)
+        throw std::invalid_argument("learning-rate must be finite and greater than 0");
+    if (!std::isfinite(cfg.weightDecay) || cfg.weightDecay < 0)
+        throw std::invalid_argument("weight-decay must be finite and not less than 0");
+    if (!std::isfinite(cfg.moveScoreLossGamma) || cfg.moveScoreLossGamma < 0)
         throw std::invalid_argument("move-score-loss-gamma must be not less than 0");
+    if (!std::isfinite(cfg.moveScoreScale) || cfg.moveScoreScale <= 0)
+        throw std::invalid_argument("move-score-scale must be finite and greater than 0");
+    if (!std::isfinite(cfg.moveScoreBias))
+        throw std::invalid_argument("move-score-bias must be finite");
+    if (cfg.moveScoreMin > cfg.moveScoreMax)
+        throw std::invalid_argument("move-score-max must be not less than move-score-min");
     if (cfg.boardSizeMin > cfg.boardSizeMax)
         throw std::invalid_argument("max-boardsize must be greater than min-boardsize");
     if (!cfg.usePreviousScalingFactor) {
         if (cfg.nIterations < 1 || cfg.nStepsPerIteration < 1)
             throw std::invalid_argument(
                 "num-iteration and num-steps-per-iteration must be greater than 0");
+        if (!std::isfinite(cfg.scalingFactorMin) || !std::isfinite(cfg.scalingFactorMax)
+            || cfg.scalingFactorMin <= 0 || cfg.scalingFactorMax <= 0)
+            throw std::invalid_argument("scaling factor bounds must be finite and greater than 0");
         if (cfg.scalingFactorMin > cfg.scalingFactorMax)
             throw std::invalid_argument(
                 "scaling-factor-lower-bound must be not less than scaling-factor-upper-bound");
@@ -91,7 +107,7 @@ std::unique_ptr<Dataset> createDataset(Command::DatasetType            datasetTy
 
 }  // namespace
 
-void Command::tuning(int argc, char *argv[])
+int Command::tuning(int argc, char *argv[])
 {
     std::string              outdir;
     std::string              trainName;
@@ -129,7 +145,13 @@ void Command::tuning(int argc, char *argv[])
          cxxopts::value<size_t>()->default_value("100"))  //
         ("b,batchsize",
          "Number of samples in one gradient batch",
-         cxxopts::value<size_t>()->default_value(std::to_string(cfg.batchSize)))  //
+          cxxopts::value<size_t>()->default_value(std::to_string(cfg.batchSize)))  //
+        ("threads",
+         "Number of tuner worker threads (0 uses hardware concurrency)",
+         cxxopts::value<size_t>()->default_value(std::to_string(cfg.numThreads)))  //
+        ("seed",
+         "Seed for reproducible tuner random streams",
+         cxxopts::value<uint64_t>()->default_value(std::to_string(cfg.seed)))  //
         ("l,learning-rate",
          "Learning rate for gradient descent",
          cxxopts::value<double>()->default_value(std::to_string(cfg.learningRate)))  //
@@ -214,6 +236,8 @@ void Command::tuning(int argc, char *argv[])
         modelExportInterval    = args["export-interval"].as<size_t>();
         cfg.batchSize          = args["batchsize"].as<size_t>();
         cfg.maxTuneEntries     = args["max-entries"].as<size_t>();
+        cfg.numThreads         = args["threads"].as<size_t>();
+        cfg.seed               = args["seed"].as<uint64_t>();
         cfg.learningRate       = args["learning-rate"].as<double>();
         cfg.weightDecay        = args["weight-decay"].as<double>();
         cfg.lossType           = parseLossType(args["loss"].as<std::string>());
@@ -258,6 +282,8 @@ void Command::tuning(int argc, char *argv[])
 
         // Open and init statistic CSV file
         std::ofstream statFile(outpath / "stat.csv");
+        if (!statFile)
+            throw std::runtime_error("unable to open tuning statistic output");
         double        totalElapsedSeconds = 0.0;
         statFile << "Epoch, ValueLoss, PolicyLoss, ValueValLoss, PolicyValLoss, "
                     "Elapsed, Epochs/Sec, Timestamp\n";
@@ -275,6 +301,8 @@ void Command::tuning(int argc, char *argv[])
                      << stat.elapsedSeconds << ", "                               //
                      << stat.currentEpoch / totalElapsedSeconds << ", "           //
                      << std::time(0) << std::endl;
+            if (!statFile)
+                throw std::runtime_error("failed to write tuning statistics");
 
             // Export model periodically
             if (modelExportInterval && stat.currentEpoch > 0
@@ -292,13 +320,20 @@ void Command::tuning(int argc, char *argv[])
                 // Export model file
                 std::string   modelFileName = trainName + "-e" + epochStr + ".bin";
                 std::ofstream model(outpath / modelFileName, std::ios::binary);
+                if (!model)
+                    throw std::runtime_error("unable to open model output " + modelFileName);
                 Config::exportModel(model);
+                model.flush();
+                if (!model)
+                    throw std::runtime_error("failed to write model output " + modelFileName);
 
                 MESSAGEL("Model saved to " << modelFileName);
             }
         });
+        return EXIT_SUCCESS;
     }
     catch (const std::exception &e) {
         ERRORL("Error occurred when tuning: " << e.what());
+        return EXIT_FAILURE;
     }
 }
