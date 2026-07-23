@@ -22,6 +22,8 @@
 #include "../core/iohelper.h"
 #include "../core/utils.h"
 #include "../eval/evaluator.h"
+#include "dataformat.h"
+#include "datastream.h"
 
 #include <algorithm>
 #include <array>
@@ -33,15 +35,6 @@
 #include <unordered_set>
 
 namespace {
-
-/// Each move is represented by a 16bit unsigned integer. It's lower 10 bits are
-/// constructed with two index x and y using uint16_t move = (x << 5) | y.
-Pos decodeU16Move(uint16_t move)
-{
-    int x = (move >> 5) & 0x1f;
-    int y = move & 0x1f;
-    return Pos {x, y};
-}
 
 /// Unpacks a byte array into bit array (in big-endian).
 /// @param bytes The source of byte array
@@ -97,193 +90,28 @@ void boardArrayToPosSequence(const std::vector<Color> &boardArray,
 
 namespace Tuning {
 
-class SimpleBinaryDataset::DataSource
-{
-public:
-    DataSource(std::vector<std::ifstream> &&fileStreams)
-        : files(std::move(fileStreams))
-        , nextIdx(0)
-        , compressor(nullptr)
-        , istream(nullptr)
-    {
-        next();
-    }
-
-    ~DataSource() = default;
-
-    /// Goto the next file in the file list.
-    /// @return False when curIdx reaches the end, otherwise true.
-    bool next()
-    {
-        if (nextIdx == files.size())
-            return false;
-
-        // Delete previous compressor if exists
-        if (compressor) {
-            istream = nullptr;
-            compressor.reset();
-        }
-
-        // Probe the LZ4 frame magic. A zero-byte file skips the probe (the read would
-        // throw, as the streams have failbit exceptions enabled) and is treated as an
-        // uncompressed stream, which yields EOF on the first read and gets skipped by
-        // the empty-file loop in next(DataEntry*).
-        int magic = 0;
-        if (files[nextIdx].peek() != std::ifstream::traits_type::eof()) {
-            files[nextIdx].read(reinterpret_cast<char *>(&magic), sizeof(magic));
-            files[nextIdx].seekg(0);
-        }
-
-        compressor = std::make_unique<Compressor>(
-            files[nextIdx],
-            magic == 0x184D2204 ? Compressor::Type::LZ4_DEFAULT : Compressor::Type::NO_COMPRESS);
-        istream = compressor->openInputStream();
-        nextIdx++;
-
-        if (!istream)
-            throw std::runtime_error("unable to load bin dataset stream");
-
-        return true;
-    }
-
-    /// Reset the state of data source to its initial state.
-    void reset()
-    {
-        istream = nullptr;
-        if (compressor)
-            compressor.reset();
-        for (std::ifstream &fs : files) {
-            fs.clear();  // drop any eof/fail state before rewinding
-            fs.seekg(0);
-        }
-        nextIdx = 0;
-        next();
-    }
-
-    std::istream &getStream()
-    {
-        assert(istream);
-        return *istream;
-    }
-
-private:
-    std::vector<std::ifstream>  files;
-    size_t                      nextIdx;
-    std::unique_ptr<Compressor> compressor;
-    std::istream               *istream;
-};
-
 SimpleBinaryDataset::SimpleBinaryDataset(const std::vector<std::string> &filenames)
+    : dataStream(std::make_unique<MultiFileInputStream>(filenames))
 {
-    if (filenames.empty())
-        throw std::runtime_error("no file in binary dataset");
-
-    std::vector<std::ifstream> fileStreams;
-
-    for (const std::string &filename : filenames) {
-        std::ifstream fileStream(filename, std::ios::binary);
-        if (!fileStream.is_open())
-            throw std::runtime_error("unable to open file " + filename);
-
-        fileStream.exceptions(std::istream::badbit | std::istream::failbit);
-        fileStreams.push_back(std::move(fileStream));
-    }
-
-    dataSource = std::make_unique<DataSource>(std::move(fileStreams));
 }
 
 SimpleBinaryDataset::~SimpleBinaryDataset() {}
 
 bool SimpleBinaryDataset::next(DataEntry *entry)
 {
-    struct EntryHead
-    {
-        uint16_t result : 2;     // game outcome: 0=loss, 1=draw, 2=win (side to move pov)
-        uint16_t ply : 9;        // current number of stones on board
-        uint16_t boardsize : 5;  // board size in [5-22]
-        uint16_t rule : 3;       // gomocup rule number: 0=freestyle, 1=standard, 4=renju
-        uint16_t move : 13;      // move output by the engine
-    } ehead;
-    uint16_t position[MAX_MOVES];  // move sequence that representing a position
-
     // While the current stream has reached its EOF, proceed to the next file
     // (looping over any empty file in the middle of the file list)
-    while (dataSource->getStream().eof()
-           || dataSource->getStream().peek() == std::ios::traits_type::eof()) {
-        if (!dataSource->next())
+    while (dataStream->atStreamEnd()) {
+        if (!dataStream->nextFile())
             return false;
     }
 
-    std::istream &src = dataSource->getStream();
-
-    // Read and process entry header first
-    src.read(reinterpret_cast<char *>(&ehead), sizeof(EntryHead));
-
-    // Check legality of entryhead
-    if (ehead.boardsize == 0)
-        throw std::runtime_error("wrong boardsize in dataset");
-    Rule rule = decodeWireRule(ehead.rule);
-    if (rule >= RULE_NB)
-        throw std::runtime_error("wrong rule in dataset");
-    if (ehead.result != 0 && ehead.result != 1 && ehead.result != 2)
-        throw std::runtime_error("wrong result in dataset");
-    if (ehead.ply > ehead.boardsize * ehead.boardsize)
-        throw std::runtime_error("wrong ply in dataset");
-
-    if (entry) {
-        entry->clearMoveData();  // free move data of the previous entry, if the entry is reused
-        entry->position.clear();
-        entry->position.reserve(ehead.ply);
-
-        // Read position move sequence according the ply in header
-        src.read(reinterpret_cast<char *>(&position), ehead.ply * sizeof(uint16_t));
-
-        std::unordered_set<Pos> movedPos;
-        movedPos.reserve(MAX_MOVES);
-
-        for (uint16_t ply = 0; ply < ehead.ply; ply++) {
-            Pos pos = decodeU16Move(position[ply]);
-            if (!pos.isInBoard(ehead.boardsize, ehead.boardsize))
-                throw std::runtime_error("wrong move sequence in dataset (["
-                                         + std::to_string(pos.x()) + "," + std::to_string(pos.y())
-                                         + "] in boardsize " + std::to_string(ehead.boardsize)
-                                         + ")");
-            else if (movedPos.find(pos) != movedPos.end()) {
-                std::stringstream ss;
-                ss << "duplicate move in sequence ([" << pos << "], current sequence ["
-                   << MovesText {entry->position, false} << "])";
-                throw std::runtime_error(ss.str());
-            }
-
-            movedPos.emplace(pos);
-            entry->position.push_back(pos);
-        }
-
-        Pos bestMove = decodeU16Move(ehead.move);
-        if (!bestMove.isInBoard(ehead.boardsize, ehead.boardsize)
-            || movedPos.find(bestMove) != movedPos.end())
-            throw std::runtime_error("wrong best move in dataset ([" + std::to_string(bestMove.x())
-                                     + "," + std::to_string(bestMove.y()) + "] in boardsize "
-                                     + std::to_string(ehead.boardsize) + ")");
-
-        entry->move        = bestMove;
-        entry->eval        = VALUE_NONE;  // represent as no eval
-        entry->boardsize   = ehead.boardsize;
-        entry->rule        = rule;
-        entry->result      = Result(ehead.result);
-        entry->moveDataTag = DataEntry::NO_MOVE_DATA;
-    }
-    else {
-        // Just skip those position move sequence
-        src.ignore(ehead.ply * sizeof(uint16_t));
-    }
-
-    return true;
+    return readBinEntry(dataStream->stream(), entry, scratch);
 }
 
 void SimpleBinaryDataset::reset()
 {
-    dataSource->reset();
+    dataStream->reset();
 }
 
 // ==============================================
@@ -291,52 +119,11 @@ void SimpleBinaryDataset::reset()
 class PackedBinaryDataset::DataSource
 {
 public:
-    DataSource(std::vector<std::ifstream> &&fileStreams)
-        : files(std::move(fileStreams))
-        , nextFileIdx(0)
-        , compressor(nullptr)
-        , istream(nullptr)
-        , nextMoveIdx(0)
-    {
-        nextFile();
-    }
-
-    ~DataSource() = default;
+    DataSource(const std::vector<std::string> &filenames) : stream(filenames), nextMoveIdx(0) {}
 
     /// Goto the next file in the file list.
-    /// @return False when curIdx reaches the end, otherwise true.
-    bool nextFile()
-    {
-        if (nextFileIdx == files.size())
-            return false;
-
-        // Delete previous compressor if exists
-        if (compressor) {
-            istream = nullptr;
-            compressor.reset();
-        }
-
-        // Probe the LZ4 frame magic. A zero-byte file skips the probe (the read would
-        // throw, as the streams have failbit exceptions enabled) and is treated as an
-        // uncompressed stream, which yields EOF on the first readNextGame and gets
-        // skipped by the file-advance loop in PackedBinaryDataset::next().
-        int magic = 0;
-        if (files[nextFileIdx].peek() != std::ifstream::traits_type::eof()) {
-            files[nextFileIdx].read(reinterpret_cast<char *>(&magic), sizeof(magic));
-            files[nextFileIdx].seekg(0);
-        }
-
-        compressor = std::make_unique<Compressor>(
-            files[nextFileIdx],
-            magic == 0x184D2204 ? Compressor::Type::LZ4_DEFAULT : Compressor::Type::NO_COMPRESS);
-        istream = compressor->openInputStream();
-        nextFileIdx++;
-
-        if (!istream)
-            throw std::runtime_error("unable to load binpack dataset stream");
-
-        return true;
-    }
+    /// @return False when the file list is exhausted, otherwise true.
+    bool nextFile() { return stream.nextFile(); }
 
     /// Get the next data entry from the currently opened file.
     /// This function does NOT advance to the next file: when it returns false, the
@@ -348,199 +135,69 @@ public:
     {
         // If all moves of the current game are consumed, read the next game from the
         // current file (looping over games with an empty move sequence, if any).
-        while (nextMoveIdx >= gameEntry.moveSequence.size()) {
-            if (!readNextGame(*istream, gameEntry))
+        while (nextMoveIdx >= game.moveSequence.size()) {
+            if (!readPackedGame(stream.stream(), game, scratch))
                 return false;
             nextMoveIdx = 0;
         }
 
         if (dataEntry) {
-            // Free move data of the previous entry, if the entry is reused
-            dataEntry->clearMoveData();
-            dataEntry->position.reserve(gameEntry.initPosition.size() + nextMoveIdx);
-            dataEntry->position.resize(gameEntry.initPosition.size() + nextMoveIdx);
-            auto posEnd = std::copy(gameEntry.initPosition.begin(),
-                                    gameEntry.initPosition.end(),
+            clearPayload(dataEntry->payload);  // reset payload of the previous entry, if reused
+            dataEntry->position.reserve(game.initPosition.size() + nextMoveIdx);
+            dataEntry->position.resize(game.initPosition.size() + nextMoveIdx);
+            auto posEnd = std::copy(game.initPosition.begin(),
+                                    game.initPosition.end(),
                                     dataEntry->position.begin());
             for (size_t i = 0; i < nextMoveIdx; i++)
-                *posEnd++ = gameEntry.moveSequence[i][0].move;
+                *posEnd++ = game.moveSequence[i].move;
 
-            dataEntry->move      = gameEntry.moveSequence[nextMoveIdx][0].move;
-            dataEntry->eval      = gameEntry.moveSequence[nextMoveIdx][0].eval;
-            dataEntry->boardsize = gameEntry.boardSize;
-            dataEntry->rule      = gameEntry.rule;
-            // The game result is stored from the first mover's pov; each move
-            // (passes included) yields the turn, so flip by move-index parity.
-            dataEntry->result = nextMoveIdx & 1 ? flipResult(gameEntry.result) : gameEntry.result;
-            dataEntry->moveDataTag = DataEntry::NO_MOVE_DATA;
+            const GameEntry::MoveData &md = game.moveSequence[nextMoveIdx];
+            dataEntry->move               = md.move;
+            dataEntry->eval               = md.eval;
+            dataEntry->boardsize          = game.boardsize;
+            dataEntry->rule               = game.rule;
+            // GameEntry::result is white pov; the entry wants its side to move's pov.
+            dataEntry->result =
+                dataEntry->sideToMove() == WHITE ? game.result : flipResult(game.result);
 
-            // This move has multi-pv info
-            int multiPvCount = gameEntry.moveSequence[nextMoveIdx].size();
-            if (multiPvCount > 1) {
-                int numExtraPVs = std::min(multiPvCount - 1, 256 - DataEntry::MULTIPV_BEGIN);
-                dataEntry->moveDataTag =
-                    static_cast<DataEntry::MoveDataTag>(DataEntry::MULTIPV_BEGIN + numExtraPVs - 1);
-                dataEntry->multiPvMoves = new PVMove[numExtraPVs];
-                for (int i = 0; i < numExtraPVs; i++)
-                    dataEntry->multiPvMoves[i] = gameEntry.moveSequence[nextMoveIdx][1 + i];
-            }
+            // Attach the extra multi-pv moves of this ply, if any
+            if (const ExtraPVArray *pvs = extraPVs(md.payload))
+                payloadAs<ExtraPVArray>(dataEntry->payload).assign(pvs->begin(), pvs->end());
         }
 
         nextMoveIdx++;
         return true;
     }
 
+    /// Read the next whole game record from the currently opened file (the
+    /// nextGame() fast path; do not interleave with nextEntry()).
+    /// @return False when the current file has no more games, otherwise true.
+    bool nextGameRecord(GameEntry &outGame)
+    {
+        return readPackedGame(stream.stream(), outGame, scratch);
+    }
+
     /// Reset the state of data source to its initial state.
     void reset()
     {
-        istream = nullptr;
-        if (compressor)
-            compressor.reset();
-        for (std::ifstream &fs : files) {
-            fs.clear();  // drop any eof/fail state before rewinding
-            fs.seekg(0);
-        }
-        nextFileIdx = 0;
+        stream.reset();
         nextMoveIdx = 0;
         // Discard the cached game: without this, the first nextEntry() after a reset
         // would serve the moves of the previously cached game again.
-        gameEntry.initPosition.clear();
-        gameEntry.moveSequence.clear();
-        nextFile();
+        game.initPosition.clear();
+        game.moveSequence.clear();
     }
 
 private:
-    /// PVList contains all PVs in a move.
-    using PVList = std::vector<PVMove>;
-    /// GameEntry represents a full game in the dataset.
-    struct GameEntry
-    {
-        uint8_t             boardSize;
-        Rule                rule;
-        Result              result;
-        uint16_t            totalPly;
-        std::vector<Pos>    initPosition;
-        std::vector<PVList> moveSequence;
-    };
-
-    std::vector<std::ifstream>  files;
-    size_t                      nextFileIdx;
-    std::unique_ptr<Compressor> compressor;
-    std::istream               *istream;
-    GameEntry                   gameEntry;
-    size_t                      nextMoveIdx;
-
-    /// Read next game from the given stream and store it to the given entry.
-    bool readNextGame(std::istream &is, struct GameEntry &entry)
-    {
-        struct EntryHead
-        {
-            uint32_t boardSize : 5;   // board size in [5-22]
-            uint32_t rule : 3;        // gomocup rule number: 0=freestyle, 1=standard, 4=renju
-            uint32_t result : 4;      // game outcome: 0=loss, 1=draw, 2=win (first player pov)
-            uint32_t totalPly : 10;   // total number of stones on board after game ended
-            uint32_t initPly : 10;    // initial number of stones on board when game started
-            uint32_t gameTag : 14;    // game tag of this game, reserved for future use
-            uint32_t moveCount : 18;  // the count of move sequence
-        } ehead;
-        uint16_t position[MAX_MOVES];  // move sequence that representing an opening position
-
-        // Check if current stream has reached its EOF
-        if (is.eof() || is.peek() == std::ios::traits_type::eof())
-            return false;
-
-        // Read and process entry header first
-        is.read(reinterpret_cast<char *>(&ehead), sizeof(EntryHead));
-
-        // Check legality of entryhead
-        if (ehead.boardSize < 5 || ehead.boardSize > 22)
-            throw std::runtime_error("wrong boardsize in dataset");
-        Rule rule = decodeWireRule(ehead.rule);
-        if (rule >= RULE_NB)
-            throw std::runtime_error("wrong rule in dataset");
-        if (ehead.result != 0 && ehead.result != 1 && ehead.result != 2)
-            throw std::runtime_error("wrong result in dataset");
-        if (ehead.totalPly > ehead.boardSize * ehead.boardSize)
-            throw std::runtime_error("wrong ply in dataset");
-
-        entry.boardSize = ehead.boardSize;
-        entry.rule      = rule;
-        entry.result    = Result(ehead.result);
-        entry.totalPly  = ehead.totalPly;
-        entry.initPosition.clear();
-        entry.initPosition.reserve(ehead.initPly);
-
-        // Read position move sequence according the ply in header
-        is.read(reinterpret_cast<char *>(&position), ehead.initPly * sizeof(uint16_t));
-
-        for (uint32_t ply = 0; ply < ehead.initPly; ply++) {
-            Pos pos = decodeU16Move(position[ply]);
-            if (!pos.isInBoard(entry.boardSize, entry.boardSize))
-                throw std::runtime_error("wrong move sequence in dataset (["
-                                         + std::to_string(pos.x()) + "," + std::to_string(pos.y())
-                                         + "] in boardsize " + std::to_string(entry.boardSize)
-                                         + ")");
-
-            entry.initPosition.push_back(pos);
-        }
-
-        // Read move sequence
-        entry.moveSequence.clear();
-        PVList pvList;
-        struct Move
-        {
-            uint16_t isFirst : 1;   // is this move the first in multipv?
-            uint16_t isLast : 1;    // is this move the last in multipv?
-            uint16_t isNoEval : 1;  // does this move contain no eval info?
-            uint16_t isPass : 1;    // is this a pass (yields the turn, places no stone)?
-            uint16_t reserved : 2;  // reserved for future use
-            uint16_t move : 10;     // move output from engine
-            int16_t  eval;          // eval output from engine
-        } moveData;
-        for (uint32_t i = 0; i < ehead.moveCount; i++) {
-            is.read(reinterpret_cast<char *>(&moveData), sizeof(Move));
-            if (moveData.isFirst)
-                pvList.clear();
-
-            Pos pos;
-            if (moveData.isPass)
-                pos = Pos::PASS;
-            else {
-                pos = decodeU16Move(moveData.move);
-                if (!pos.isInBoard(entry.boardSize, entry.boardSize))
-                    throw std::runtime_error("wrong move sequence in dataset (["
-                                             + std::to_string(pos.x()) + ","
-                                             + std::to_string(pos.y()) + "] in boardsize "
-                                             + std::to_string(entry.boardSize) + ")");
-            }
-
-            pvList.push_back({pos, moveData.isNoEval ? (Eval)VALUE_NONE : moveData.eval});
-
-            if (moveData.isLast)
-                entry.moveSequence.push_back(std::move(pvList));
-        }
-
-        return true;
-    }
+    MultiFileInputStream stream;
+    GameEntry            game;
+    PackedDecodeScratch  scratch;
+    size_t               nextMoveIdx;
 };
 
 PackedBinaryDataset::PackedBinaryDataset(const std::vector<std::string> &filenames)
+    : dataSource(std::make_unique<DataSource>(filenames))
 {
-    if (filenames.empty())
-        throw std::runtime_error("no file in packed binary dataset");
-
-    std::vector<std::ifstream> fileStreams;
-
-    for (const std::string &filename : filenames) {
-        std::ifstream fileStream(filename, std::ios::binary);
-        if (!fileStream.is_open())
-            throw std::runtime_error("unable to open file " + filename);
-
-        fileStream.exceptions(std::istream::badbit | std::istream::failbit);
-        fileStreams.push_back(std::move(fileStream));
-    }
-
-    dataSource = std::make_unique<DataSource>(std::move(fileStreams));
 }
 
 PackedBinaryDataset::~PackedBinaryDataset() {}
@@ -549,6 +206,22 @@ bool PackedBinaryDataset::next(DataEntry *entry)
 {
     // Check if we reached the end of entry list, if so proceeds to the next file
     while (!dataSource->nextEntry(entry)) {
+        // Check if we reached the end of file list, if so we have completed the whole dataset
+        if (!dataSource->nextFile())
+            return false;
+    }
+    return true;
+}
+
+bool PackedBinaryDataset::nextGame(GameEntry *game)
+{
+    // A skip-only call still has to decode the record to find the next boundary;
+    // decode into a discarded local in that case.
+    GameEntry  skipped;
+    GameEntry &outGame = game ? *game : skipped;
+
+    // Check if we reached the end of the current file, if so proceed to the next file
+    while (!dataSource->nextGameRecord(outGame)) {
         // Check if we reached the end of file list, if so we have completed the whole dataset
         if (!dataSource->nextFile())
             return false;
@@ -803,13 +476,13 @@ bool KatagoNumpyDataset::next(DataEntry *entry)
     }
 
     if (entry) {
-        entry->clearMoveData();  // free move data of the previous entry, if the entry is reused
         int numCells  = rawDataEntry.boardInput.size();
         int boardSize = (int)std::sqrt(numCells);  // square board
         boardArrayToPosSequence(rawDataEntry.boardInput, boardSize, entry->position);
 
-        // Create and normalize policy target
-        auto  policy         = new float[numCells + 1];
+        // Create and normalize policy target (in place, reusing the entry's buffer)
+        PolicyArrayF32 &policy = payloadAs<PolicyArrayF32>(entry->payload);
+        policy.resize(numCells + 1);
         float policySum      = 0.0f;
         float policyMax      = std::numeric_limits<float>::min();
         int   maxPolicyIndex = 0;
@@ -828,9 +501,7 @@ bool KatagoNumpyDataset::next(DataEntry *entry)
         for (int i = 0; i < numCells + 1; i++)
             policy[i] *= invPolicySum;
 
-        entry->move        = Pos(maxPolicyIndex % boardSize, maxPolicyIndex / boardSize);
-        entry->moveDataTag = DataEntry::POLICY_ARRAY_FLOAT;
-        entry->policyF32   = policy;
+        entry->move = Pos(maxPolicyIndex % boardSize, maxPolicyIndex / boardSize);
 
         // Create value target from already normalized probailities
         Evaluation::ValueType value {rawDataEntry.valueTarget[0],

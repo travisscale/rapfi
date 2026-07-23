@@ -122,18 +122,34 @@ void Command::dataprep(int argc, char *argv[])
             dataWriter = Tuning::makeDataWriter(dataWriterType, outputPath);
 
         // Start processing loop
-        size_t    numEntriesProcessed = 0;
-        Time      startTime = now(), lastTime = startTime;
-        DataEntry entry;
-        while (inputDataset->next(&entry)) {
-            dataWriter->writeEntry(entry);
-            numEntriesProcessed++;
+        size_t numEntriesProcessed = 0;
+        Time   startTime = now(), lastTime = startTime;
 
-            // Print out processing progress over time
+        auto reportProgress = [&]() {
             if (now() - lastTime >= reportInterval) {
                 MESSAGEL("Processed " << numEntriesProcessed << " entries, entry/s = "
                                       << numEntriesProcessed / ((now() - startTime) / 1000.0));
                 lastTime = now();
+            }
+        };
+
+        if (inputDataset->supportsGames()) {
+            // Game fast path: stream whole games. This preserves game boundaries
+            // exactly (no reconstruction from entry chains) and lets game-aware
+            // writers process each game incrementally.
+            GameEntry game;
+            while (inputDataset->nextGame(&game)) {
+                dataWriter->writeGame(game);
+                numEntriesProcessed += game.moveSequence.size();
+                reportProgress();
+            }
+        }
+        else {
+            DataEntry entry;
+            while (inputDataset->next(&entry)) {
+                dataWriter->writeEntry(entry);
+                numEntriesProcessed++;
+                reportProgress();
             }
         }
 

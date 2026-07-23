@@ -213,8 +213,12 @@ set(MODULE_SOURCES
     command/opengen.cpp
     command/selfplay.cpp
     command/tuning.cpp
+    tuning/dataformat.cpp
     tuning/dataset.cpp
+    tuning/datastream.cpp
     tuning/datawriter.cpp
+    tuning/featureencoder.cpp
+    tuning/numpywriter.cpp
     tuning/optimizer.cpp
     tuning/tuner.cpp
 )
@@ -271,8 +275,11 @@ set(HEADERS
     game/wincheck.h
 
     tuning/dataentry.h
+    tuning/dataformat.h
     tuning/dataset.h
+    tuning/datastream.h
     tuning/datawriter.h
+    tuning/featureencoder.h
     tuning/optimizer.h
     tuning/tunemap.h
     tuning/tuner.h

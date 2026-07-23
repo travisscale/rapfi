@@ -392,21 +392,17 @@ GameEntry playOneGame(Board                &board,
         Pos bestMove = Search::Engine.ctx.bestMove;
         gameEntry.moveSequence.push_back({bestMove, Eval(searchValue)});
         // A multipv search can still yield a single root move (a forced defence, or
-        // renju forbidden points leaving one legal move). Such a ply must be recorded
-        // as a plain move: MULTIPV_BEGIN + 1 - 2 would underflow the tag into
-        // POLICY_ARRAY_INT16, making the data writer read a policy array that was
-        // never allocated.
+        // renju forbidden points leaving one legal move); such a ply carries no
+        // extra-PV payload.
         int numPVMoves = std::min<int>(options.multiPV, mainThread->rootMoves.size());
         if (options.multiPV > 1 && numPVMoves > 1) {
-            auto &moveData = gameEntry.moveSequence.back();
-            moveData.tag  = DataEntry::MoveDataTag(DataEntry::MULTIPV_BEGIN + numPVMoves - 2);
-            moveData.multiPvMoves = new PVMove[numPVMoves - 1];
+            auto &pvs = payloadAs<ExtraPVArray>(gameEntry.moveSequence.back().payload);
+            pvs.reserve(numPVMoves - 1);
             for (int i = 1; i < numPVMoves; i++) {
                 auto &rm = mainThread->rootMoves[i];
                 assert(rm.pv[0] != bestMove);
-                moveData.multiPvMoves[i - 1] = {
-                    rm.pv[0],
-                    Eval(rm.value != VALUE_NONE ? rm.value : rm.previousValue)};
+                pvs.push_back(
+                    {rm.pv[0], Eval(rm.value != VALUE_NONE ? rm.value : rm.previousValue)});
             }
         }
 

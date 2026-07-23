@@ -19,11 +19,14 @@
 #pragma once
 
 #include "dataentry.h"
+#include "dataformat.h"
 
 #include <memory>
 #include <string>
 
 namespace Tuning {
+
+class MultiFileInputStream;  // forward declaration (datastream.h)
 
 /// Dataset class is the base class for a sequential iterable-style dataset.
 class Dataset
@@ -37,6 +40,18 @@ public:
     /// Throws exception when stream operation failed or the dataset is corrupted.
     /// This function is not thread-safe.
     virtual bool next(DataEntry *entry) = 0;
+
+    /// Whether this dataset stores whole games and supports iterating them via nextGame().
+    /// Game iteration is both lossless (game boundaries need no reconstruction from entry
+    /// chains) and faster (no per-entry position expansion), so consumers that can handle
+    /// games should prefer it when available.
+    virtual bool supportsGames() const { return false; }
+
+    /// Reads one complete game into the caller's (reused) GameEntry. Only meaningful when
+    /// supportsGames() is true; the default implementation reports end-of-data. Do not
+    /// interleave with next() on the same pass - both advance the same underlying stream.
+    /// @return False if there is no more game to read, otherwise true.
+    virtual bool nextGame(GameEntry *game) { return false; }
 
     /// Reset the read cursor to the beginning of the dataset.
     virtual void reset() = 0;
@@ -68,8 +83,8 @@ public:
     void reset() override;
 
 private:
-    class DataSource;
-    std::unique_ptr<DataSource> dataSource;
+    std::unique_ptr<MultiFileInputStream> dataStream;
+    BinDecodeScratch                      scratch;
 };
 
 /// PackedBinaryDataset implements Dataset for packed binary format (.binpack) in c-gomoku-cli.
@@ -114,6 +129,8 @@ public:
     ~PackedBinaryDataset();
 
     bool next(DataEntry *entry) override;
+    bool supportsGames() const override { return true; }
+    bool nextGame(GameEntry *game) override;
     void reset() override;
 
 private:

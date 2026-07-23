@@ -179,6 +179,10 @@ public:
     ~NumpyDataWriter();
 
     void writeEntry(const DataEntry &entry);
+    /// Buffers a whole game and extracts the per-entry features with one
+    /// incrementally-updated board per game (one move() per entry) at flush,
+    /// instead of replaying every entry's position from an empty board.
+    void writeGame(const GameEntry &gameEntry) override;
     void writeEntryWithSoftValueTarget(const DataEntry &entry,
                                        float            winprob,
                                        float            loseprob,
