@@ -21,26 +21,19 @@
 #include "command/command.h"
 #include "core/compressor.h"
 #include "core/iohelper.h"
-#include "database/dbclient.h"
-#include "database/dbstorage.h"
-#include "database/yxdbstorage.h"
-#include "eval/evaluator.h"
-#include "eval/mix10nnue.h"
-#include "eval/mix9svqnnue.h"
+#include "database/dbconfig.h"
+#include "eval/evalconfig.h"
+#include "eval/scoretables.h"
 #include "game/pattern.h"
-#include "search/ab/searcher.h"
 #include "search/hashtable.h"
-#include "search/mcts/searcher.h"
+#include "search/searchconfig.h"
+#include "search/searcher.h"
 #include "search/searchthread.h"
-
-#ifdef USE_ORT_EVALUATOR
-    #include "eval/onnxevaluator.h"
-#endif
 
 #include <cpptoml.h>
 #include <fstream>
-#include <functional>
 #include <limits>
+#include <optional>
 #ifdef MULTI_THREADING
     #include <thread>
 #endif
@@ -78,179 +71,47 @@ Pattern4Score P4SCORES[RULE_NB + 1][PCODE_NB];
 namespace Config {
 
 // -------------------------------------------------
-// Model configs
-
-float EvaluatorMarginWinLossScale    = 1.18f;
-float EvaluatorMarginWinLossExponent = 3.07f;
-float EvaluatorMarginScale           = 395.0f;
-float EvaluatorDrawBlackWinRate      = 0.5f;
-float EvaluatorDrawRatio             = 1.0f;
-
-// -------------------------------------------------
 // General options
 
-/// Should we reload config file before searching each move.
-bool ReloadConfigEachMove = false;
-/// Should we clear hash after each time config file is loaded.
-bool ClearHashAfterConfigLoaded = true;
-/// Default number of therads if not specified (0 means max hardware concurrency).
-size_t DefaultThreadNum = 1;
-/// Message output mode.
-MsgMode MessageMode = MsgMode::BRIEF;
-/// Coordinate convertion mode for protocol I/O.
-CoordConvertionMode IOCoordMode = CoordConvertionMode::NONE;
-/// Default candidate range mode if not specified when creating board.
-CandidateRange DefaultCandidateRange = CandidateRange::SQUARE3_LINE4;
-/// Memory reserved for stuff other than hash table in max_memory option.
-size_t MemoryReservedMB[RULE_NB] = {0};
-/// Default hash table size (zero for not setting).
-size_t DefaultTTSizeKB = 0;
+GeneralConfig GeneralCfg;
 
 // -------------------------------------------------
-// Search options
 
-const char *DefaultSearcherName = "alphabeta";
+/// PendingConfig stages one loadConfig pass. The struct copies are seeded
+/// from the live globals so that absent keys inherit the current values and
+/// present keys override them, exactly as the old in-place writes did; the
+/// remaining members record the engine effects requested by the parsed keys.
+/// Nothing is published until loadConfig's commit step.
+struct PendingConfig
+{
+    GeneralConfig               general  = GeneralCfg;
+    Search::SearchConfig        search   = Search::SearchCfg;
+    Search::TimeConfig          time     = Search::TimeCfg;
+    Database::DatabaseConfig    database = Database::DatabaseCfg;
+    Evaluation::EvaluatorConfig eval     = Evaluation::EvalCfg;
 
-/// Whether to enable aspiration window.
-bool AspirationWindow = true;
-/// Whether to filter redundant symmetry moves at root.
-bool FilterSymmetryRootMoves = true;
-/// Number of iterations after we found a mate.
-int NumIterationAfterMate = 6;
-/// Number of iterations after we found a singular root.
-int NumIterationAfterSingularRoot = 4;
-/// Max depth to search.
-int MaxSearchDepth = 99;
-/// Expand node (evaluating policy) when first evaluate a node (evaluating value).
-bool ExpandWhenFirstEvaluate = false;
-/// The maximum number of visits per playout in MCTS search.
-int MaxNumVisitsPerPlayout = 100;
-/// How many nodes to print root moves in MCTS search. (Positive number to enable)
-int NodesToPrintMCTSRootmoves = 0;
-/// How much milliseconds to print root moves in MCTS search. (Positive number to enable)
-int TimeToPrintMCTSRootmoves = 1000;
-/// Maximum number of non-pv root moves to print in MCTS search.
-int MaxNonPVRootmovesToPrint = 10;
-/// Maximum number of search nodes after we found that we are in singular root.
-int NumNodesAfterSingularRoot = 100;
-/// The power of two number of shards that the node table has.
-int NumNodeTableShardsPowerOfTwo = 10;
-/// The ratio to decrase utility when child draw rate is high.
-float DrawUtilityPenalty = 0.35f;
-
-// Time management options
-
-/// Time reserved for delay in communication between engine and GUI.
-int TurnTimeReserved = 30;
-/// Number of moves spared for the rest of game
-float MatchSpace = 22.0f;
-/// Minimum number of moves spared for the rest of game
-float MatchSpaceMin = 7.0f;
-/// Average branch factor to whether next depth has enough time
-float AverageBranchFactor = 1.7f;
-/// Exit search if turn time is used more than this ratio (even given ample match time)
-float AdvancedStopRatio = 0.9f;
-/// Plan time management at most this many moves ahead
-int MoveHorizon = 64;
-/// Bias of time divisor factor to depth
-float TimeDivisorBias = 1.25f;
-/// Scale of time divisor factor to depth
-float TimeDivisorScale = 0.02f;
-/// Pow to depth in time divisor factor
-float TimeDivisorDepthPow = 1.4f;
-/// Scale of score to falling factor
-float FallingFactorScale = 0.0032f;
-/// Offset of score to falling factor
-float FallingFactorBias = 0.544f;
-/// Scale of best move stable ply to reduction factor
-float BestmoveStableReductionScale = 0.0125f;
-/// Power of previous time reduction factor to get current factor
-float BestmoveStablePrevReductionPow = 0.528f;
-
-// -------------------------------------------------
-// Database options
-
-/// Whether to enable database by default
-bool DatabaseDefaultEnabled;
-/// Legacy code page to use for early database files and imported library files.
-uint16_t DatabaseLegacyFileCodePage;
-/// The type of database storage
-std::string DatabaseType;
-/// The URL of database storage (in utf-8 encoding)
-std::string DatabaseURL;
-/// Database storage factory, which takes the url (in utf-8 encoding)
-/// and returns a unique pointer to an instance of DBStorage.
-std::function<std::unique_ptr<::Database::DBStorage>(std::string)> DatabaseMaker;
-/// Database client cache sizes
-size_t DatabaseCacheSize       = 4096;
-size_t DatabaseRecordCacheSize = 32768;
-
-// Library import options
-
-/// Mapping of marks in library file
-char DatabaseLibBlackWinMark  = 'a';
-char DatabaseLibWhiteWinMark  = 'a';
-char DatabaseLibBlackLoseMark = 'c';
-char DatabaseLibWhiteLoseMark = 'c';
-/// Ignore all comments in imported library file
-bool DatabaseLibIgnoreComment = false;
-/// Ignore all board texts in imported library file
-bool DatabaseLibIgnoreBoardText = false;
-
-// Database search options
-
-/// Whether to write/update the database in search
-bool DatabaseReadonlyMode = false;
-/// Whether to always write parent node if any of the children are written
-bool DatabaseMandatoryParentWrite = true;
-
-/// Search before this ply is required to query the database
-int DatabaseQueryPly = 3;
-/// How many iteration needed to increase one database query ply
-int DatabaseQueryPVIterPerPlyIncrement = 1;
-/// How many iteration needed to increase one database query ply
-int DatabaseQueryNonPVIterPerPlyIncrement = 2;
-
-/// PV node before this ply is required to write the database
-int DatabasePVWritePly = 1;
-/// How many depth needed to add a new record in PV node
-int DatabasePVWriteMinDepth = 25;
-/// NonPV node before this ply is required to write the database
-int DatabaseNonPVWritePly = 0;
-/// How many depth needed to add a new record in NonPV node
-int DatabaseNonPVWriteMinDepth = 25;
-/// The range of value allowed to write in PV/NonPV node
-int DatabaseWriteValueRange = 800;
-/// Mate node before this ply is required to write the database
-int DatabaseMateWritePly = 2;
-/// How many depth needed to add a new record in exact Mate node
-int DatabaseMateWriteMinDepthExact = 20;
-/// How many depth needed to add a new record in non-exact Mate node
-int DatabaseMateWriteMinDepthNonExact = 40;
-/// For mate longer than this step, we will try to write the record
-int DatabaseMateWriteMinStep = 10;
-
-/// For record found less then this ply, it will try to overwrite it with exact record
-int DatabaseExactOverwritePly = 100;
-/// For record found less then this ply, it will try to overwrite it with non-exact record
-int DatabaseNonExactOverwritePly = 0;
-/// The overwrite rule to write the database
-::Database::OverwriteRule DatabaseOverwriteRule = ::Database::OverwriteRule::BetterValueDepthBound;
-/// The bias added to the exact bound when comparing
-int DatabaseOverwriteExactBias = 3;
-/// The bias added to the old depth bound when comparing
-int DatabaseOverwriteDepthBoundBias = -1;
-/// The bias added to the queried depth bound when comparing
-int DatabaseQueryResultDepthBoundBias = 0;
-
-// -------------------------------------------------
+    /// "[search] default_searcher" was present: switch the searcher at commit.
+    std::optional<std::string> searcherName;
+    /// "[general]" was present with a nonzero (inherited or new)
+    /// default_tt_size_kb: resize the TT at commit.
+    bool applyTTSize = false;
+    /// "[database]" was present with enable_by_default resolved true: attach
+    /// a storage at commit.
+    bool attachDatabase = false;
+    /// "[model.evaluator]" parsed a valid type + weights: the maker to install
+    /// at commit. Left null otherwise, so the commit resets to classical eval
+    /// (mirroring the old reset-then-maybe-install sequence).
+    Evaluation::EvaluatorMakerFunc evaluatorMaker;
+    /// Evaluator type name for the commit-time "Evaluator set to" message.
+    std::string evaluatorName;
+};
 
 void readRequirement(const cpptoml::table &t);
-void readGeneral(const cpptoml::table &t);
-void readSearch(const cpptoml::table &t);
-void readModel(const cpptoml::table &t);
-void readEvaluator(const cpptoml::table &t);
-void readDatabase(const cpptoml::table &t);
+void readGeneral(const cpptoml::table &t, PendingConfig &pending);
+void readSearch(const cpptoml::table &t, PendingConfig &pending);
+void readModel(const cpptoml::table &t, PendingConfig &pending);
+void readEvaluator(const cpptoml::table &t, PendingConfig &pending);
+void readDatabase(const cpptoml::table &t, PendingConfig &pending);
 template <typename ValueType,
           ValueType MinVal    = std::numeric_limits<ValueType>::lowest(),
           ValueType MaxVal    = std::numeric_limits<ValueType>::max(),
@@ -259,15 +120,29 @@ void readValueModel(const cpptoml::table &t, SetterType setter);
 
 }  // namespace Config
 
-/// Load config from a stream.
+/// Load config from a stream, transactionally.
+///
+/// The readers parse the whole document into a staged PendingConfig (building
+/// the one fallible resource, the evaluator maker, along the way); only after
+/// everything parsed does the commit step publish the structs to the live
+/// globals and apply the engine effects: searcher switch (default_searcher),
+/// TT resize (default_tt_size_kb), database attach (enable_by_default),
+/// evaluator maker install. A load that fails in any way leaves the previous
+/// configuration and engine state fully intact. The one exception is the
+/// classical model surface written by readModel (EVALS / P4SCORES /
+/// ScalingFactor, and binary_file via loadModelFromFile): those tables are
+/// still written in place during parse.
 /// @param configStream A input stream that contains a config file.
-/// @param skipModelLoading Whether to skip model loading. Can be useful when
-///     model is loaded separately from a binary file.
 /// @return Returns true if loading succeeded, otherwise returns false.
 bool Config::loadConfig(std::istream &configStream)
 {
-    Search::Engine.setupEvaluator(nullptr);
-    Search::Engine.setupDatabase(nullptr);
+    // Callers signal stopThinking() but do not wait, so quiesce the search
+    // threads before touching any state they read: the classical model tables
+    // are written in place during parse, and the commit publishes the config
+    // structs that search reads directly.
+    Search::Engine.waitForIdle();
+
+    PendingConfig pending;
 
     try {
         auto c = cpptoml::parser(configStream).parse();
@@ -276,21 +151,46 @@ bool Config::loadConfig(std::istream &configStream)
             readRequirement(*requirement);
 
         if (auto general = c->get_table("general"))
-            readGeneral(*general);
+            readGeneral(*general, pending);
 
         if (auto search = c->get_table("search"))
-            readSearch(*search);
+            readSearch(*search, pending);
 
         if (auto database = c->get_table("database"))
-            readDatabase(*database);
+            readDatabase(*database, pending);
 
         if (auto model = c->get_table("model"))
-            readModel(*model);
+            readModel(*model, pending);
     }
     catch (const std::exception &e) {
         ERRORL("Failed to load config: " << e.what());
         return false;
     }
+
+    // Commit: publish the parsed structs, then apply the engine effects.
+    GeneralCfg            = pending.general;
+    Search::SearchCfg     = pending.search;
+    Search::TimeCfg       = pending.time;
+    Database::DatabaseCfg = pending.database;
+    Evaluation::EvalCfg   = pending.eval;
+
+    // The searcher switch precedes the TT resize: setupSearcher carries the
+    // old searcher's memory limit onto the new one, and the resize then
+    // overrides it - the same end state the old resize-then-switch produced.
+    if (pending.searcherName)
+        Search::Engine.setupSearcher(::Search::createSearcher(*pending.searcherName));
+    if (pending.applyTTSize)
+        Search::Engine.searcher()->setMemoryLimit(GeneralCfg.defaultTTSizeKB);
+    // Detach (and thereby flush) any previous database before creating the
+    // new storage: YXDBStorage reads the file on construction, and dirty
+    // thread DBClients write back into the old storage only when it detaches,
+    // so a same-path reload must not open the file ahead of that flush.
+    Search::Engine.setupDatabase(nullptr);
+    if (pending.attachDatabase)
+        Search::Engine.setupDatabase(Database::createDBStorage(Database::DatabaseCfg));
+    Search::Engine.setupEvaluator(std::move(pending.evaluatorMaker));
+    if (!pending.evaluatorName.empty())
+        MESSAGEL("Evaluator set to " << pending.evaluatorName << ".");
 
     return true;
 }
@@ -318,20 +218,23 @@ void Config::readRequirement(const cpptoml::table &t)
 }
 
 /// Read general table of the config.
-void Config::readGeneral(const cpptoml::table &t)
+void Config::readGeneral(const cpptoml::table &t, PendingConfig &pending)
 {
-    ReloadConfigEachMove = t.get_as<bool>("reload_config_each_move").value_or(ReloadConfigEachMove);
-    ClearHashAfterConfigLoaded =
-        t.get_as<bool>("clear_hash_after_config_loaded").value_or(ClearHashAfterConfigLoaded);
+    auto &cfg = pending.general;
+
+    cfg.reloadConfigEachMove =
+        t.get_as<bool>("reload_config_each_move").value_or(cfg.reloadConfigEachMove);
+    cfg.clearHashAfterConfigLoaded =
+        t.get_as<bool>("clear_hash_after_config_loaded").value_or(cfg.clearHashAfterConfigLoaded);
 
     // Read Default Thread Num
-    DefaultThreadNum = t.get_as<uint64_t>("default_thread_num").value_or(DefaultThreadNum);
-    if (DefaultThreadNum == 0) {
+    cfg.defaultThreadNum = t.get_as<uint64_t>("default_thread_num").value_or(cfg.defaultThreadNum);
+    if (cfg.defaultThreadNum == 0) {
 #ifdef MULTI_THREADING
-        DefaultThreadNum = std::thread::hardware_concurrency();
-        MESSAGEL("Setting default thread num to " << DefaultThreadNum << ".");
+        cfg.defaultThreadNum = std::thread::hardware_concurrency();
+        MESSAGEL("Setting default thread num to " << cfg.defaultThreadNum << ".");
 #else
-        DefaultThreadNum = 1;
+        cfg.defaultThreadNum = 1;
 #endif
     }
 
@@ -339,15 +242,15 @@ void Config::readGeneral(const cpptoml::table &t)
     if (t.get_as<std::string>("message_mode")) {
         std::string msgModeStr = *t.get_as<std::string>("message_mode");
         if (msgModeStr == "normal")
-            MessageMode = MsgMode::NORMAL;
+            cfg.messageMode = MsgMode::NORMAL;
         else if (msgModeStr == "brief")
-            MessageMode = MsgMode::BRIEF;
+            cfg.messageMode = MsgMode::BRIEF;
         else if (msgModeStr == "ucilike")
-            MessageMode = MsgMode::UCILIKE;
+            cfg.messageMode = MsgMode::UCILIKE;
         else {
             if (msgModeStr != "none")
                 MESSAGEL("Warning: unknown message mode [" << msgModeStr << "], reset to [none].");
-            MessageMode = MsgMode::NONE;
+            cfg.messageMode = MsgMode::NONE;
         }
     }
 
@@ -355,14 +258,14 @@ void Config::readGeneral(const cpptoml::table &t)
     if (t.get_as<std::string>("coord_conversion_mode")) {
         std::string coordModeStr = *t.get_as<std::string>("coord_conversion_mode");
         if (coordModeStr == "X_flipY")
-            IOCoordMode = CoordConvertionMode::X_FLIPY;
+            cfg.ioCoordMode = CoordConvertionMode::X_FLIPY;
         else if (coordModeStr == "flipY_X")
-            IOCoordMode = CoordConvertionMode::FLIPY_X;
+            cfg.ioCoordMode = CoordConvertionMode::FLIPY_X;
         else {
             if (coordModeStr != "none")
                 MESSAGEL("Warning: unknown coordinate conversion mode [" << coordModeStr
                                                                          << "], reset to [none].");
-            IOCoordMode = CoordConvertionMode::NONE;
+            cfg.ioCoordMode = CoordConvertionMode::NONE;
         }
     }
 
@@ -370,21 +273,21 @@ void Config::readGeneral(const cpptoml::table &t)
     if (t.get_as<std::string>("default_candidate_range")) {
         std::string candRangeModeStr = *t.get_as<std::string>("default_candidate_range");
         if (candRangeModeStr == "square2")
-            DefaultCandidateRange = CandidateRange::SQUARE2;
+            cfg.defaultCandidateRange = CandidateRange::SQUARE2;
         else if (candRangeModeStr == "square2_line3")
-            DefaultCandidateRange = CandidateRange::SQUARE2_LINE3;
+            cfg.defaultCandidateRange = CandidateRange::SQUARE2_LINE3;
         else if (candRangeModeStr == "square3")
-            DefaultCandidateRange = CandidateRange::SQUARE3;
+            cfg.defaultCandidateRange = CandidateRange::SQUARE3;
         else if (candRangeModeStr == "square3_line4")
-            DefaultCandidateRange = CandidateRange::SQUARE3_LINE4;
+            cfg.defaultCandidateRange = CandidateRange::SQUARE3_LINE4;
         else if (candRangeModeStr == "square4")
-            DefaultCandidateRange = CandidateRange::SQUARE4;
+            cfg.defaultCandidateRange = CandidateRange::SQUARE4;
         else if (candRangeModeStr == "full_board")
-            DefaultCandidateRange = CandidateRange::FULL_BOARD;
+            cfg.defaultCandidateRange = CandidateRange::FULL_BOARD;
         else {
             MESSAGEL("Warning: unknown candidate range [" << candRangeModeStr
                                                           << "], reset to [square2_line3].");
-            DefaultCandidateRange = CandidateRange::SQUARE2_LINE3;
+            cfg.defaultCandidateRange = CandidateRange::SQUARE2_LINE3;
         }
     }
 
@@ -392,82 +295,94 @@ void Config::readGeneral(const cpptoml::table &t)
     if (auto table = t.get_array("memory_reserved_mb")) {
         if (auto array = table->get_array_of<int64_t>()) {
             for (int i = 0; i < RULE_NB; i++)
-                MemoryReservedMB[i] = array->at(std::min<size_t>(i, array->size() - 1));
+                cfg.memoryReservedMB[i] = array->at(std::min<size_t>(i, array->size() - 1));
         }
     }
     else {
         auto v = t.get_as<uint64_t>("memory_reserved_mb");
         for (int i = 0; i < RULE_NB; i++)
-            MemoryReservedMB[i] = v.value_or(MemoryReservedMB[i]);
+            cfg.memoryReservedMB[i] = v.value_or(cfg.memoryReservedMB[i]);
     }
 
-    DefaultTTSizeKB = t.get_as<uint64_t>("default_tt_size_kb").value_or(DefaultTTSizeKB);
-    // Resize TT according to default TT size (overriding previous size)
-    if (DefaultTTSizeKB > 0)
-        Search::Engine.searcher()->setMemoryLimit(DefaultTTSizeKB);
+    cfg.defaultTTSizeKB = t.get_as<uint64_t>("default_tt_size_kb").value_or(cfg.defaultTTSizeKB);
+    // Request a TT resize at commit according to default TT size (overriding previous size)
+    pending.applyTTSize = cfg.defaultTTSizeKB > 0;
 }
 
 /// Read search table of the config.
-void Config::readSearch(const cpptoml::table &t)
+void Config::readSearch(const cpptoml::table &t, PendingConfig &pending)
 {
     if (auto v = t.get_as<std::string>("default_searcher"); v)
-        Search::Engine.setupSearcher(createSearcher(*v));
+        pending.searcherName = *v;
+
+    auto &cfg     = pending.search;
+    auto &timeCfg = pending.time;
 
     // Parameters for alpha-beta search
-    AspirationWindow = t.get_as<bool>("aspiration_window").value_or(AspirationWindow);
-    FilterSymmetryRootMoves =
-        t.get_as<bool>("filter_symmetry_root_moves").value_or(FilterSymmetryRootMoves);
-    NumIterationAfterMate =
-        t.get_as<int>("num_iteration_after_mate").value_or(NumIterationAfterMate);
-    NumIterationAfterSingularRoot =
-        t.get_as<int>("num_iteration_after_singular_root").value_or(NumIterationAfterSingularRoot);
-    MaxSearchDepth = t.get_as<int>("max_search_depth").value_or(MaxSearchDepth);
+    cfg.aspirationWindow = t.get_as<bool>("aspiration_window").value_or(cfg.aspirationWindow);
+    cfg.filterSymmetryRootMoves =
+        t.get_as<bool>("filter_symmetry_root_moves").value_or(cfg.filterSymmetryRootMoves);
+    cfg.numIterationAfterMate =
+        t.get_as<int>("num_iteration_after_mate").value_or(cfg.numIterationAfterMate);
+    cfg.numIterationAfterSingularRoot = t.get_as<int>("num_iteration_after_singular_root")
+                                            .value_or(cfg.numIterationAfterSingularRoot);
+    cfg.maxSearchDepth = t.get_as<int>("max_search_depth").value_or(cfg.maxSearchDepth);
 
     // Parameters for MCTS search
-    ExpandWhenFirstEvaluate =
-        t.get_as<bool>("expand_when_first_evaluate").value_or(ExpandWhenFirstEvaluate);
-    MaxNumVisitsPerPlayout =
-        t.get_as<int>("max_num_visits_per_playout").value_or(MaxNumVisitsPerPlayout);
-    NodesToPrintMCTSRootmoves =
-        t.get_as<int>("nodes_to_print_mcts_rootmoves").value_or(NodesToPrintMCTSRootmoves);
-    TimeToPrintMCTSRootmoves =
-        t.get_as<int>("time_to_print_mcts_rootmoves").value_or(TimeToPrintMCTSRootmoves);
-    MaxNonPVRootmovesToPrint =
-        t.get_as<int>("max_non_pv_rootmoves_to_print").value_or(MaxNonPVRootmovesToPrint);
-    NumNodesAfterSingularRoot =
-        t.get_as<int>("num_nodes_after_singular_root").value_or(NumNodesAfterSingularRoot);
-    NumNodeTableShardsPowerOfTwo =
-        t.get_as<int>("num_node_table_shards_power_of_two").value_or(NumNodeTableShardsPowerOfTwo);
-    DrawUtilityPenalty = t.get_as<double>("draw_utility_penalty").value_or(DrawUtilityPenalty);
+    cfg.expandWhenFirstEvaluate =
+        t.get_as<bool>("expand_when_first_evaluate").value_or(cfg.expandWhenFirstEvaluate);
+    cfg.maxNumVisitsPerPlayout =
+        t.get_as<int>("max_num_visits_per_playout").value_or(cfg.maxNumVisitsPerPlayout);
+    cfg.nodesToPrintMCTSRootmoves =
+        t.get_as<int>("nodes_to_print_mcts_rootmoves").value_or(cfg.nodesToPrintMCTSRootmoves);
+    cfg.timeToPrintMCTSRootmoves =
+        t.get_as<int>("time_to_print_mcts_rootmoves").value_or(cfg.timeToPrintMCTSRootmoves);
+    cfg.maxNonPVRootmovesToPrint =
+        t.get_as<int>("max_non_pv_rootmoves_to_print").value_or(cfg.maxNonPVRootmovesToPrint);
+    cfg.numNodesAfterSingularRoot =
+        t.get_as<int>("num_nodes_after_singular_root").value_or(cfg.numNodesAfterSingularRoot);
+    cfg.numNodeTableShardsPowerOfTwo = t.get_as<int>("num_node_table_shards_power_of_two")
+                                           .value_or(cfg.numNodeTableShardsPowerOfTwo);
+    cfg.drawUtilityPenalty =
+        t.get_as<double>("draw_utility_penalty").value_or(cfg.drawUtilityPenalty);
 
     // Read time management options
     if (auto tm = t.get_table("timectl")) {
-        TurnTimeReserved = tm->get_as<int>("turn_time_reserved").value_or(TurnTimeReserved);
-        MatchSpace       = tm->get_as<double>("match_space").value_or(MatchSpace);
-        MatchSpaceMin    = tm->get_as<double>("match_space_min").value_or(MatchSpaceMin);
-        AverageBranchFactor =
-            tm->get_as<double>("average_branch_factor").value_or(AverageBranchFactor);
-        AdvancedStopRatio = tm->get_as<double>("advanced_stop_ratio").value_or(AdvancedStopRatio);
-        MoveHorizon       = tm->get_as<int>("move_horizon").value_or(MoveHorizon);
+        timeCfg.turnTimeReserved =
+            tm->get_as<int>("turn_time_reserved").value_or(timeCfg.turnTimeReserved);
+        timeCfg.matchSpace = tm->get_as<double>("match_space").value_or(timeCfg.matchSpace);
+        timeCfg.matchSpaceMin =
+            tm->get_as<double>("match_space_min").value_or(timeCfg.matchSpaceMin);
+        timeCfg.averageBranchFactor =
+            tm->get_as<double>("average_branch_factor").value_or(timeCfg.averageBranchFactor);
+        timeCfg.advancedStopRatio =
+            tm->get_as<double>("advanced_stop_ratio").value_or(timeCfg.advancedStopRatio);
+        timeCfg.moveHorizon = tm->get_as<int>("move_horizon").value_or(timeCfg.moveHorizon);
 
-        TimeDivisorScale = tm->get_as<double>("time_divisor_scale").value_or(TimeDivisorScale);
-        TimeDivisorBias  = tm->get_as<double>("time_divisor_bias").value_or(TimeDivisorBias);
-        TimeDivisorDepthPow =
-            tm->get_as<double>("time_divisor_depth_pow").value_or(TimeDivisorDepthPow);
+        timeCfg.timeDivisorScale =
+            tm->get_as<double>("time_divisor_scale").value_or(timeCfg.timeDivisorScale);
+        timeCfg.timeDivisorBias =
+            tm->get_as<double>("time_divisor_bias").value_or(timeCfg.timeDivisorBias);
+        timeCfg.timeDivisorDepthPow =
+            tm->get_as<double>("time_divisor_depth_pow").value_or(timeCfg.timeDivisorDepthPow);
 
-        FallingFactorScale =
-            tm->get_as<double>("falling_factor_scale").value_or(FallingFactorScale);
-        FallingFactorBias = tm->get_as<double>("falling_factor_bias").value_or(FallingFactorBias);
+        timeCfg.fallingFactorScale =
+            tm->get_as<double>("falling_factor_scale").value_or(timeCfg.fallingFactorScale);
+        timeCfg.fallingFactorBias =
+            tm->get_as<double>("falling_factor_bias").value_or(timeCfg.fallingFactorBias);
 
-        BestmoveStableReductionScale = tm->get_as<double>("bestmove_stable_reduction_scale")
-                                           .value_or(BestmoveStableReductionScale);
-        BestmoveStablePrevReductionPow = tm->get_as<double>("bestmove_stable_prev_reduction_pow")
-                                             .value_or(BestmoveStablePrevReductionPow);
+        timeCfg.bestmoveStableReductionScale =
+            tm->get_as<double>("bestmove_stable_reduction_scale")
+                .value_or(timeCfg.bestmoveStableReductionScale);
+        timeCfg.bestmoveStablePrevReductionPow =
+            tm->get_as<double>("bestmove_stable_prev_reduction_pow")
+                .value_or(timeCfg.bestmoveStablePrevReductionPow);
     }
 }
 
-/// Read model table of all rules in the config.
-void Config::readModel(const cpptoml::table &t)
+/// Read model table of all rules in the config. The classical model tables
+/// (EVALS / P4SCORES / ScalingFactor) are written in place, not staged.
+void Config::readModel(const cpptoml::table &t, PendingConfig &pending)
 {
     const Rule  Rules[]    = {FREESTYLE, STANDARD, RENJU};
     const char *RuleName[] = {"freestyle", "standard", "renju"};
@@ -480,8 +395,8 @@ void Config::readModel(const cpptoml::table &t)
     else {
         // Read Eval & Score
         if (auto eval = t.get_table("eval")) {
-            bool hasAsymmetryRenjuEval = false;
             for (Rule r : Rules) {
+                bool hasAsymmetryRenjuEval = false;
                 auto setEvalBlack = [r](PatternCode pcode, Eval ev) {
                     Evaluation::EVALS[r + BLACK][pcode] = ev;
                 };
@@ -530,8 +445,8 @@ void Config::readModel(const cpptoml::table &t)
                                                            score;
                                                    });
             };
-            bool hasAsymmetryRenjuScore = false;
             for (Rule r : Rules) {
+                bool hasAsymmetryRenjuScore = false;
                 auto ruleScore = score->get_table(RuleName[r]);
                 if (!ruleScore)  // fallback
                     ruleScore = score;
@@ -565,282 +480,152 @@ void Config::readModel(const cpptoml::table &t)
 
     // Read evaluator
     if (auto evaluator = t.get_table("evaluator"))
-        readEvaluator(*evaluator);
+        readEvaluator(*evaluator, pending);
 }
 
 /// Read evaluator table in the config.
-void Config::readEvaluator(const cpptoml::table &t)
+void Config::readEvaluator(const cpptoml::table &t, PendingConfig &pending)
 {
-    using namespace std::filesystem;
-
     auto evaluatorType = t.get_as<std::string>("type");
     auto weights       = t.get_table_array("weights");
     if (!evaluatorType || !weights || weights->begin() == weights->end())
         return;
 
-    auto warpEvaluatorMaker = [weights,
-                               evaluatorName = *evaluatorType](auto maker,
-                                                               bool seperateBlackAndWhiteWeights) {
-        return [=](int              boardSize,
-                   Rule             rule,
-                   Numa::NumaNodeId numaId) -> std::unique_ptr<Evaluation::Evaluator> {
-            try {
-                for (auto weightCfg : *weights) {
-                    path weightPath;
-                    path blackWeightPath, whiteWeightPath;
-
-                    if (auto weightFile = weightCfg->get_as<std::string>("weight_file"))
-                        weightPath = Command::getModelFullPath(u8path(*weightFile));
-                    else if (!seperateBlackAndWhiteWeights)
-                        throw std::runtime_error("must specify weight_file in weight configs.");
-
-                    if (seperateBlackAndWhiteWeights && weightPath.empty()) {
-                        auto weightFileBlack = weightCfg->get_as<std::string>("weight_file_black");
-                        auto weightFileWhite = weightCfg->get_as<std::string>("weight_file_white");
-
-                        blackWeightPath = Command::getModelFullPath(u8path(*weightFileBlack));
-                        whiteWeightPath = Command::getModelFullPath(u8path(*weightFileWhite));
-                        if (!weightFileBlack || !weightFileWhite)
-                            throw std::runtime_error(
-                                "must specify weight_file or weight_file_black "
-                                "and weight_file_white in weight configs.");
-                    }
-                    else {
-                        blackWeightPath = weightPath;
-                        whiteWeightPath = weightPath;
-                    }
-
-                    try {
-                        return maker(boardSize,
-                                     rule,
-                                     numaId,
-                                     weightPath,
-                                     std::make_pair(blackWeightPath, whiteWeightPath),
-                                     *weightCfg);
-                    }
-                    catch (const Evaluation::UnsupportedRuleError &e) {
-                    }
-                    catch (const Evaluation::UnsupportedBoardSizeError &e) {
-                    }
-                    catch (const std::exception &e) {
-                        if (MessageMode != MsgMode::NONE)
-                            MESSAGEL("Failed to load from "
-                                     << (!weightPath.empty()
-                                             ? pathToConsoleString(weightPath)
-                                             : pathToConsoleString(blackWeightPath) + " and "
-                                                   + pathToConsoleString(whiteWeightPath))
-                                     << " due to error: " << e.what());
-                    }
-                }
-
-                if (MessageMode != MsgMode::NONE)
-                    MESSAGEL("Evaluator " << evaluatorName
-                                          << " disabled: no compatible weight config found.");
-                return nullptr;
-            }
-            catch (const std::exception &e) {
-                ERRORL("Evaluator " << evaluatorName << " failed to initialized: " << e.what());
-                return nullptr;
-            }
-        };
-    };
-
-    if (*evaluatorType == "mix9svq") {
-        Search::Engine.setupEvaluator(warpEvaluatorMaker(
-            [=](int                   boardSize,
-                Rule                  rule,
-                Numa::NumaNodeId      numaId,
-                path                  weightPath,
-                std::pair<path, path> blackAndWhiteWeightPath,
-                const cpptoml::table &weightCfg) {
-                return std::make_unique<Evaluation::mix9svq::Evaluator>(
-                    boardSize,
-                    rule,
-                    numaId,
-                    blackAndWhiteWeightPath.first,
-                    blackAndWhiteWeightPath.second);
-            },
-            true));
+    Evaluation::EvaluatorWeightsConfig weightsCfg;
+    weightsCfg.type      = *evaluatorType;
+    weightsCfg.ortDevice = t.get_as<std::string>("ort_device").value_or("");
+    for (auto weightCfg : *weights) {
+        Evaluation::EvaluatorWeightsConfig::WeightFiles wf;
+        if (auto v = weightCfg->get_as<std::string>("weight_file"))
+            wf.file = *v;
+        if (auto v = weightCfg->get_as<std::string>("weight_file_black"))
+            wf.fileBlack = *v;
+        if (auto v = weightCfg->get_as<std::string>("weight_file_white"))
+            wf.fileWhite = *v;
+        weightsCfg.weights.push_back(std::move(wf));
     }
-    else if (*evaluatorType == "mix10") {
-        Search::Engine.setupEvaluator(warpEvaluatorMaker(
-            [=](int                   boardSize,
-                Rule                  rule,
-                Numa::NumaNodeId      numaId,
-                path                  weightPath,
-                std::pair<path, path> blackAndWhiteWeightPath,
-                const cpptoml::table &weightCfg) {
-                return std::make_unique<Evaluation::mix10::Evaluator>(
-                    boardSize,
-                    rule,
-                    numaId,
-                    blackAndWhiteWeightPath.first,
-                    blackAndWhiteWeightPath.second);
-            },
-            true));
-    }
-#ifdef USE_ORT_EVALUATOR
-    else if (*evaluatorType == "ort") {
-        std::string deviceName = t.get_as<std::string>("ort_device").value_or("");
 
-        Search::Engine.setupEvaluator(warpEvaluatorMaker(
-            [=](int                   boardSize,
-                Rule                  rule,
-                Numa::NumaNodeId      numaId,
-                path                  weightPath,
-                std::pair<path, path> blackAndWhiteWeightPath,
-                const cpptoml::table &weightCfg) {
-                return std::make_unique<Evaluation::onnx::OnnxEvaluator>(boardSize,
-                                                                         rule,
-                                                                         weightPath,
-                                                                         deviceName);
-            },
-            false));
-    }
-#endif
-    else {
-        throw std::runtime_error("unsupported evaluator type " + *evaluatorType);
-    }
+    pending.evaluatorMaker =
+        Evaluation::makeEvaluatorMaker(std::move(weightsCfg), Command::getModelFullPath);
+    pending.evaluatorName = *evaluatorType;
 
     // Read classical/evaluator switching margin
-    EvaluatorMarginWinLossScale =
-        (float)t.get_as<double>("margin_winloss_scale").value_or(EvaluatorMarginWinLossScale);
-    EvaluatorMarginWinLossExponent =
-        (float)t.get_as<double>("margin_winloss_exp").value_or(EvaluatorMarginWinLossExponent);
-    EvaluatorMarginScale = (float)t.get_as<double>("margin_scale").value_or(EvaluatorMarginScale);
-    EvaluatorDrawBlackWinRate =
-        (float)t.get_as<double>("draw_black_winrate").value_or(EvaluatorDrawBlackWinRate);
-    EvaluatorDrawRatio        = (float)t.get_as<double>("draw_ratio").value_or(EvaluatorDrawRatio);
-    EvaluatorDrawBlackWinRate = std::clamp(EvaluatorDrawBlackWinRate, 0.0f, 1.0f);
-    EvaluatorDrawRatio        = std::clamp(EvaluatorDrawRatio, 0.0f, 1.0f);
-
-    MESSAGEL("Evaluator set to " << *evaluatorType << ".");
+    auto &evalCfg               = pending.eval;
+    evalCfg.marginWinLossScale  = (float)t.get_as<double>("margin_winloss_scale")
+                                     .value_or(evalCfg.marginWinLossScale);
+    evalCfg.marginWinLossExponent =
+        (float)t.get_as<double>("margin_winloss_exp").value_or(evalCfg.marginWinLossExponent);
+    evalCfg.marginScale = (float)t.get_as<double>("margin_scale").value_or(evalCfg.marginScale);
+    evalCfg.drawBlackWinRate =
+        (float)t.get_as<double>("draw_black_winrate").value_or(evalCfg.drawBlackWinRate);
+    evalCfg.drawRatio        = (float)t.get_as<double>("draw_ratio").value_or(evalCfg.drawRatio);
+    evalCfg.drawBlackWinRate = std::clamp(evalCfg.drawBlackWinRate, 0.0f, 1.0f);
+    evalCfg.drawRatio        = std::clamp(evalCfg.drawRatio, 0.0f, 1.0f);
 }
 
 /// Read database table in the config.
-void Config::readDatabase(const cpptoml::table &t)
+void Config::readDatabase(const cpptoml::table &t, PendingConfig &pending)
 {
-    DatabaseDefaultEnabled = t.get_as<bool>("enable_by_default").value_or(DatabaseDefaultEnabled);
-    DatabaseType           = t.get_as<std::string>("type").value_or(DatabaseType);
-    DatabaseURL            = t.get_as<std::string>("url").value_or(DatabaseURL);
-    DatabaseCacheSize      = t.get_as<size_t>("cache_size").value_or(DatabaseCacheSize);
-    DatabaseRecordCacheSize =
-        t.get_as<size_t>("record_cache_size").value_or(DatabaseRecordCacheSize);
-    DatabaseLegacyFileCodePage =
-        t.get_as<int>("legacy_file_code_page").value_or(DatabaseLegacyFileCodePage);
-    DatabaseMaker = nullptr;
+    auto &cfg = pending.database;
 
-    if (DatabaseType == "yixindb") {
-        if (DatabaseURL.empty())
-            DatabaseURL = "rapfi.db";
+    cfg.defaultEnabled  = t.get_as<bool>("enable_by_default").value_or(cfg.defaultEnabled);
+    cfg.type            = t.get_as<std::string>("type").value_or(cfg.type);
+    cfg.url             = t.get_as<std::string>("url").value_or(cfg.url);
+    cfg.cacheSize       = t.get_as<size_t>("cache_size").value_or(cfg.cacheSize);
+    cfg.recordCacheSize = t.get_as<size_t>("record_cache_size").value_or(cfg.recordCacheSize);
+    cfg.legacyFileCodePage =
+        t.get_as<int>("legacy_file_code_page").value_or(cfg.legacyFileCodePage);
+    cfg.factoryEnabled = false;
 
-        bool compressedSave   = true;
-        bool saveOnClose      = true;
-        int  numBackupsOnSave = 1;
-        bool ignoreCorrupted  = false;
+    if (cfg.type == "yixindb") {
+        if (cfg.url.empty())
+            cfg.url = "rapfi.db";
+
+        cfg.yixindb = {};
         if (auto args = t.get_table("yixindb")) {
-            compressedSave   = args->get_as<bool>("compressed_save").value_or(compressedSave);
-            saveOnClose      = args->get_as<bool>("save_on_close").value_or(saveOnClose);
-            numBackupsOnSave = args->get_as<int>("num_backups_on_save").value_or(numBackupsOnSave);
-            ignoreCorrupted  = args->get_as<bool>("ignore_corrupted").value_or(ignoreCorrupted);
+            cfg.yixindb.compressedSave =
+                args->get_as<bool>("compressed_save").value_or(cfg.yixindb.compressedSave);
+            cfg.yixindb.saveOnClose =
+                args->get_as<bool>("save_on_close").value_or(cfg.yixindb.saveOnClose);
+            cfg.yixindb.numBackupsOnSave =
+                args->get_as<int>("num_backups_on_save").value_or(cfg.yixindb.numBackupsOnSave);
+            cfg.yixindb.ignoreCorrupted =
+                args->get_as<bool>("ignore_corrupted").value_or(cfg.yixindb.ignoreCorrupted);
         }
-
-        DatabaseMaker = [=](std::string utf8URL) -> std::unique_ptr<::Database::DBStorage> {
-            try {
-                auto dbPath    = std::filesystem::u8path(utf8URL);
-                bool existing  = std::filesystem::exists(dbPath);
-                auto startTime = now();
-                MESSAGEL("Opening yixin database at " << pathToConsoleString(dbPath) << " ...");
-                auto dbStorage = std::make_unique<::Database::YXDBStorage>(dbPath,
-                                                                           compressedSave,
-                                                                           saveOnClose,
-                                                                           numBackupsOnSave,
-                                                                           ignoreCorrupted);
-                if (existing)
-                    MESSAGEL("Loaded Yixin database (" << dbStorage->size() << " records) using "
-                                                       << (now() - startTime) << " ms.");
-                return std::move(dbStorage);
-            }
-            catch (const std::exception &e) {
-                ERRORL("Failed to create yixin database: " << e.what());
-                return nullptr;
-            }
-        };
+        cfg.factoryEnabled = true;
     }
-    else if (!DatabaseType.empty()) {
-        throw std::runtime_error("unsupported database type " + DatabaseType);
+    else if (!cfg.type.empty()) {
+        throw std::runtime_error("unsupported database type " + cfg.type);
     }
 
     if (auto s = t.get_table("search")) {
-        DatabaseReadonlyMode         = s->get_as<bool>("readonly_mode").value_or(false);
-        DatabaseMandatoryParentWrite = s->get_as<bool>("mandatory_parent_write").value_or(true);
-        DatabaseQueryPly             = s->get_as<int>("query_ply").value_or(DatabaseQueryPly);
-        DatabaseQueryPVIterPerPlyIncrement = s->get_as<int>("pv_iter_per_ply_increment")
-                                                 .value_or(DatabaseQueryPVIterPerPlyIncrement);
-        DatabaseQueryNonPVIterPerPlyIncrement =
-            s->get_as<int>("nonpv_iter_per_ply_increment")
-                .value_or(DatabaseQueryNonPVIterPerPlyIncrement);
+        auto &dbs        = cfg.search;
+        dbs.readonlyMode = s->get_as<bool>("readonly_mode").value_or(false);
+        dbs.mandatoryParentWrite = s->get_as<bool>("mandatory_parent_write").value_or(true);
+        dbs.queryPly             = s->get_as<int>("query_ply").value_or(dbs.queryPly);
+        dbs.queryPVIterPerPlyIncrement =
+            s->get_as<int>("pv_iter_per_ply_increment").value_or(dbs.queryPVIterPerPlyIncrement);
+        dbs.queryNonPVIterPerPlyIncrement = s->get_as<int>("nonpv_iter_per_ply_increment")
+                                                .value_or(dbs.queryNonPVIterPerPlyIncrement);
 
-        DatabasePVWritePly = s->get_as<int>("pv_write_ply").value_or(DatabasePVWritePly);
-        DatabasePVWriteMinDepth =
-            s->get_as<int>("pv_write_min_depth").value_or(DatabasePVWriteMinDepth);
+        dbs.pvWritePly      = s->get_as<int>("pv_write_ply").value_or(dbs.pvWritePly);
+        dbs.pvWriteMinDepth = s->get_as<int>("pv_write_min_depth").value_or(dbs.pvWriteMinDepth);
 
-        DatabaseNonPVWritePly = s->get_as<int>("nonpv_write_ply").value_or(DatabaseNonPVWritePly);
-        DatabaseNonPVWriteMinDepth =
-            s->get_as<int>("nonpv_write_min_depth").value_or(DatabaseNonPVWriteMinDepth);
+        dbs.nonPVWritePly = s->get_as<int>("nonpv_write_ply").value_or(dbs.nonPVWritePly);
+        dbs.nonPVWriteMinDepth =
+            s->get_as<int>("nonpv_write_min_depth").value_or(dbs.nonPVWriteMinDepth);
 
-        DatabaseWriteValueRange =
-            s->get_as<int>("write_value_range").value_or(DatabaseWriteValueRange);
+        dbs.writeValueRange = s->get_as<int>("write_value_range").value_or(dbs.writeValueRange);
 
-        DatabaseMateWritePly = s->get_as<int>("mate_write_ply").value_or(DatabaseMateWritePly);
-        DatabaseMateWriteMinDepthExact =
-            s->get_as<int>("mate_write_min_depth_exact").value_or(DatabaseMateWriteMinDepthExact);
-        DatabaseMateWriteMinDepthNonExact = s->get_as<int>("mate_write_min_depth_nonexact")
-                                                .value_or(DatabaseMateWriteMinDepthNonExact);
-        DatabaseMateWriteMinStep =
-            s->get_as<int>("mate_write_min_step").value_or(DatabaseMateWriteMinStep);
+        dbs.mateWritePly = s->get_as<int>("mate_write_ply").value_or(dbs.mateWritePly);
+        dbs.mateWriteMinDepthExact =
+            s->get_as<int>("mate_write_min_depth_exact").value_or(dbs.mateWriteMinDepthExact);
+        dbs.mateWriteMinDepthNonExact = s->get_as<int>("mate_write_min_depth_nonexact")
+                                            .value_or(dbs.mateWriteMinDepthNonExact);
+        dbs.mateWriteMinStep =
+            s->get_as<int>("mate_write_min_step").value_or(dbs.mateWriteMinStep);
 
-        DatabaseExactOverwritePly =
-            s->get_as<int>("exact_overwrite_ply").value_or(DatabaseExactOverwritePly);
-        DatabaseNonExactOverwritePly =
-            s->get_as<int>("nonexact_overwrite_ply").value_or(DatabaseNonExactOverwritePly);
+        dbs.exactOverwritePly =
+            s->get_as<int>("exact_overwrite_ply").value_or(dbs.exactOverwritePly);
+        dbs.nonExactOverwritePly =
+            s->get_as<int>("nonexact_overwrite_ply").value_or(dbs.nonExactOverwritePly);
 
         if (auto overwriteRule =
                 s->get_as<std::string>("overwrite_rule").value_or("better_value_depth_bound");
             overwriteRule == "better_value_depth_bound")
-            DatabaseOverwriteRule = ::Database::OverwriteRule::BetterValueDepthBound;
+            dbs.overwriteRule = ::Database::OverwriteRule::BetterValueDepthBound;
         else if (overwriteRule == "better_depth_bound")
-            DatabaseOverwriteRule = ::Database::OverwriteRule::BetterDepthBound;
+            dbs.overwriteRule = ::Database::OverwriteRule::BetterDepthBound;
         else if (overwriteRule == "better_value")
-            DatabaseOverwriteRule = ::Database::OverwriteRule::BetterValue;
+            dbs.overwriteRule = ::Database::OverwriteRule::BetterValue;
         else if (overwriteRule == "better_label")
-            DatabaseOverwriteRule = ::Database::OverwriteRule::BetterLabel;
+            dbs.overwriteRule = ::Database::OverwriteRule::BetterLabel;
         else if (overwriteRule == "always")
-            DatabaseOverwriteRule = ::Database::OverwriteRule::Always;
+            dbs.overwriteRule = ::Database::OverwriteRule::Always;
         else if (overwriteRule == "disabled")
-            DatabaseOverwriteRule = ::Database::OverwriteRule::Disabled;
+            dbs.overwriteRule = ::Database::OverwriteRule::Disabled;
         else
             MESSAGEL("unknown database overwrite rule " << overwriteRule << ", keep it unchanged.");
 
-        DatabaseOverwriteExactBias =
-            s->get_as<int>("overwrite_exact_bias").value_or(DatabaseOverwriteExactBias);
-        DatabaseOverwriteDepthBoundBias =
-            s->get_as<int>("overwrite_depth_bound_bias").value_or(DatabaseOverwriteDepthBoundBias);
-        DatabaseQueryResultDepthBoundBias = s->get_as<int>("query_result_depth_bound_bias")
-                                                .value_or(DatabaseQueryResultDepthBoundBias);
+        dbs.overwriteExactBias =
+            s->get_as<int>("overwrite_exact_bias").value_or(dbs.overwriteExactBias);
+        dbs.overwriteDepthBoundBias =
+            s->get_as<int>("overwrite_depth_bound_bias").value_or(dbs.overwriteDepthBoundBias);
+        dbs.queryResultDepthBoundBias =
+            s->get_as<int>("query_result_depth_bound_bias").value_or(dbs.queryResultDepthBoundBias);
     }
 
     if (auto s = t.get_table("libfile")) {
-        DatabaseLibBlackWinMark    = t.get_as<std::string>("black_win_mark").value_or("a")[0];
-        DatabaseLibWhiteWinMark    = t.get_as<std::string>("white_win_mark").value_or("a")[0];
-        DatabaseLibBlackLoseMark   = t.get_as<std::string>("black_lose_mark").value_or("c")[0];
-        DatabaseLibWhiteLoseMark   = t.get_as<std::string>("white_lose_mark").value_or("c")[0];
-        DatabaseLibIgnoreComment   = t.get_as<bool>("ignore_comment").value_or(false);
-        DatabaseLibIgnoreBoardText = t.get_as<bool>("ignore_board_text").value_or(false);
+        auto &lib           = cfg.libfile;
+        lib.blackWinMark    = s->get_as<std::string>("black_win_mark").value_or("a")[0];
+        lib.whiteWinMark    = s->get_as<std::string>("white_win_mark").value_or("a")[0];
+        lib.blackLoseMark   = s->get_as<std::string>("black_lose_mark").value_or("c")[0];
+        lib.whiteLoseMark   = s->get_as<std::string>("white_lose_mark").value_or("c")[0];
+        lib.ignoreComment   = s->get_as<bool>("ignore_comment").value_or(false);
+        lib.ignoreBoardText = s->get_as<bool>("ignore_board_text").value_or(false);
     }
 
-    if (DatabaseDefaultEnabled)
-        Search::Engine.setupDatabase(createDefaultDBStorage());
+    pending.attachDatabase = cfg.defaultEnabled;
 }
 
 /// Read a value model from a model table.
@@ -1017,27 +802,4 @@ void Config::exportModel(std::ostream &outStream)
 
         out->write(reinterpret_cast<char *>(scores), sizeof(scores));
     }
-}
-
-std::unique_ptr<::Search::Searcher> Config::createSearcher(std::string searcherName)
-{
-    if (searcherName.empty())
-        searcherName = DefaultSearcherName;
-
-    upperInplace(searcherName);
-
-    if (searcherName == "ALPHABETA")
-        return std::make_unique<Search::AB::ABSearcher>();
-    if (searcherName == "MCTS")
-        return std::make_unique<Search::MCTS::MCTSSearcher>();
-
-    ERRORL("Unknown search type: " << searcherName
-                                   << ", must be one of [alphabeta, mcts]."
-                                      " Use alphabeta searcher as default.");
-    return std::make_unique<Search::AB::ABSearcher>();
-}
-
-std::unique_ptr<::Database::DBStorage> Config::createDefaultDBStorage(std::string utf8URL)
-{
-    return DatabaseMaker ? DatabaseMaker(utf8URL.empty() ? DatabaseURL : utf8URL) : nullptr;
 }

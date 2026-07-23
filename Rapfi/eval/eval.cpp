@@ -18,12 +18,14 @@
 
 #include "eval.h"
 
-#include "../config.h"
+#include "evalconfig.h"
 #include "../game/board.h"
 #include "evaluator.h"
 
 #include <algorithm>
 #include <cmath>
+
+using Evaluation::EvalCfg;
 
 namespace {
 
@@ -80,10 +82,10 @@ inline Value evaluateBasic(const StateInfo &st, Color self)
 inline int classicalEvalMargin(Value bound)
 {
     float winLossRate = 2 * (Evaluation::valueToWinRate(bound) - 0.5f);
-    float x           = Config::EvaluatorMarginWinLossScale * winLossRate;
+    float x           = EvalCfg.marginWinLossScale * winLossRate;
     float x2          = x * x;
-    return (int)(Config::EvaluatorMarginScale
-                 * ::expf(-::powf(x2, Config::EvaluatorMarginWinLossExponent)));
+    return (int)(EvalCfg.marginScale
+                 * ::expf(-::powf(x2, EvalCfg.marginWinLossExponent)));
 }
 
 }  // namespace
@@ -156,9 +158,9 @@ ValueType computeEvaluatorValue(const Board &board)
     ValueType v    = board.evaluator()->evaluateValue(board);
 
     // Adjust draw rate according to draw ratio and draw black win rate
-    if (Config::EvaluatorDrawRatio < 1.0) {
-        float newDrawRate = Config::EvaluatorDrawRatio * v.draw();
-        float drawWinRate = Config::EvaluatorDrawBlackWinRate;
+    if (EvalCfg.drawRatio < 1.0) {
+        float newDrawRate = EvalCfg.drawRatio * v.draw();
+        float drawWinRate = EvalCfg.drawBlackWinRate;
         drawWinRate       = self == BLACK ? drawWinRate : 1.0f - drawWinRate;
         v                 = v.valueOfDrawWinRate(drawWinRate, newDrawRate);
     }

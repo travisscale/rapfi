@@ -126,7 +126,7 @@ void Command::addPlayOptions(cxxopts::Options &options)
          cxxopts::value<std::string>()->default_value("freestyle"))  //
         ("t,thread",
          "Number of search threads to use for searching balanced moves",
-         cxxopts::value<size_t>()->default_value(std::to_string(Config::DefaultThreadNum)))  //
+         cxxopts::value<size_t>()->default_value(std::to_string(Config::GeneralCfg.defaultThreadNum)))  //
         ("hashsize",
          "Hash size of the transposition table (in MB)",
          cxxopts::value<size_t>()->default_value("128"))  //

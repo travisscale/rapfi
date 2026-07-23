@@ -18,9 +18,9 @@
 
 #include "searchthread.h"
 
-#include "../config.h"
 #include "../core/platform.h"
 #include "../database/dbclient.h"
+#include "../database/dbconfig.h"
 #include "../eval/evaluator.h"
 #include "../game/board.h"
 #include "searcher.h"
@@ -144,8 +144,8 @@ void SearchThread::clear()
     if (engine.dbStorage() && (!dbClient || &dbClient->getStorage() != engine.dbStorage())) {
         dbClient = std::make_unique<Database::DBClient>(*engine.dbStorage(),
                                                         Database::RECORD_MASK_LVDB,
-                                                        Config::DatabaseCacheSize,
-                                                        Config::DatabaseRecordCacheSize);
+                                                        Database::DatabaseCfg.cacheSize,
+                                                        Database::DatabaseCfg.recordCacheSize);
     }
 }
 

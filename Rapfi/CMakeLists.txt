@@ -171,12 +171,14 @@ set(CORE_SOURCES
     core/version.cpp
 
     database/dbclient.cpp
+    database/dbconfig.cpp
     database/dbutils.cpp
     database/dbtypes.cpp
     database/renlib.cpp
     database/yxdbstorage.cpp
 
     eval/eval.cpp
+    eval/evalconfig.cpp
     eval/evaluator.cpp
     eval/mix9svqnnue.cpp
     eval/mix10nnue.cpp
@@ -189,6 +191,7 @@ set(CORE_SOURCES
     search/movepick.cpp
     search/opening.cpp
     search/searchcommon.cpp
+    search/searchconfig.cpp
     search/searchengine.cpp
     search/searchoutput.cpp
     search/searchthread.cpp
@@ -235,6 +238,7 @@ set(HEADERS
 
     database/cache.h
     database/dbclient.h
+    database/dbconfig.h
     database/dbstorage.h
     database/dbtypes.h
     database/parallelwalk.h
@@ -243,6 +247,7 @@ set(HEADERS
     database/yxdbstorage.h
 
     eval/eval.h
+    eval/evalconfig.h
     eval/evaluator.h
     eval/mix9svqnnue.h
     eval/mix10nnue.h
@@ -275,6 +280,7 @@ set(HEADERS
     search/movepick.h
     search/opening.h
     search/searchcommon.h
+    search/searchconfig.h
     search/searcher.h
     search/searchoutput.h
     search/searchthread.h

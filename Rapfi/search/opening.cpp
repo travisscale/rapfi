@@ -339,7 +339,7 @@ bool OpeningGenerator::next()
 
     // First try to put balance1 move, if that fails, try balance2
     if (config.balance1Nodes) {
-        if (Config::MessageMode != MsgMode::NONE)
+        if (Config::GeneralCfg.messageMode != MsgMode::NONE)
             MESSAGEL("Searching balanced1 for opening " << board.positionString());
         if (putBalance1Move()) {
             board.move(rule, Search::Engine.main()->rootMoves[0].pv[0]);
@@ -350,7 +350,7 @@ bool OpeningGenerator::next()
     if (config.balance2Nodes && board.ply() > 1) {
         board.undo(rule);  // undo one random move
 
-        if (Config::MessageMode != MsgMode::NONE)
+        if (Config::GeneralCfg.messageMode != MsgMode::NONE)
             MESSAGEL("Searching balanced2 for opening " << board.positionString());
         if (putBalance2Move()) {
             board.move(rule, Search::Engine.main()->rootMoves[0].pv[0]);

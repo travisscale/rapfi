@@ -144,4 +144,14 @@ struct DBRecord
     std::string displayLabel() const;
 };
 
+/// The rule to use when a overwrite might occur to a position.
+enum class OverwriteRule {
+    Disabled,               /// No overwrite is allowed (only null record gets overwritten)
+    Always,                 /// Always overwrite
+    BetterLabel,            /// Overwrite if new record has better label (more determined result)
+    BetterValue,            /// Overwrite if new record has more valuable value
+    BetterDepthBound,       /// Better label or better depthbound
+    BetterValueDepthBound,  /// Better label or more valuable value or better depthbound
+};
+
 }  // namespace Database

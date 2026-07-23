@@ -23,6 +23,7 @@
 #include "../core/types.h"
 #include "../game/board.h"
 #include "../search/hashtable.h"
+#include "../search/searchconfig.h"
 #include "../search/searchthread.h"
 #include "argutils.h"
 #include "command.h"
@@ -63,25 +64,19 @@ static const std::vector<BenchEntry> benchSet = {
 
 struct EngineState
 {
-    size_t  threadNum;
-    size_t  memoryLimitKB;
-    bool    aspirationWindow;
-    int     numIterationAfterSingularRoot;
-    int     numIterationAfterMate;
-    MsgMode messageMode;
+    size_t                threadNum;
+    size_t                memoryLimitKB;
+    Search::SearchConfig  searchCfg;
+    Config::GeneralConfig generalCfg;
 };
 
 EngineState saveEngineStateForBenckmark()
 {
     EngineState state;
-
-    state.threadNum                     = Search::Engine.size();
-    state.memoryLimitKB                 = Search::Engine.searcher()->getMemoryLimit();
-    state.aspirationWindow              = Config::AspirationWindow;
-    state.numIterationAfterSingularRoot = Config::NumIterationAfterSingularRoot;
-    state.numIterationAfterMate         = Config::NumIterationAfterMate;
-    state.messageMode                   = Config::MessageMode;
-
+    state.threadNum     = Search::Engine.size();
+    state.memoryLimitKB = Search::Engine.searcher()->getMemoryLimit();
+    state.searchCfg     = Search::SearchCfg;
+    state.generalCfg    = Config::GeneralCfg;
     return state;
 }
 
@@ -89,10 +84,8 @@ void recoverEngineState(EngineState state)
 {
     Search::Engine.setNumThreads(state.threadNum);
     Search::Engine.searcher()->setMemoryLimit(state.memoryLimitKB);
-    Config::MessageMode                   = state.messageMode;
-    Config::AspirationWindow              = state.aspirationWindow;
-    Config::NumIterationAfterSingularRoot = state.numIterationAfterSingularRoot;
-    Config::NumIterationAfterMate         = state.numIterationAfterMate;
+    Search::SearchCfg  = state.searchCfg;
+    Config::GeneralCfg = state.generalCfg;
 }
 
 void Command::benchmark()
@@ -130,10 +123,10 @@ void Command::benchmark()
     MESSAGEL("Moves/s: " << moveCount * 1000 / std::max<size_t>(duration, 1));
 
     MESSAGEL("=========Search Bench=========");
-    Config::MessageMode                   = MsgMode::NONE;
-    Config::AspirationWindow              = true;
-    Config::NumIterationAfterSingularRoot = 0;
-    Config::NumIterationAfterMate         = 0;
+    Config::GeneralCfg.messageMode                  = MsgMode::NONE;
+    Search::SearchCfg.aspirationWindow              = true;
+    Search::SearchCfg.numIterationAfterSingularRoot = 0;
+    Search::SearchCfg.numIterationAfterMate         = 0;
     Search::Engine.setNumThreads(1);
     Search::Engine.searcher()->setMemoryLimit(TTSizeMB * 1024);
     Search::SearchOptions options;

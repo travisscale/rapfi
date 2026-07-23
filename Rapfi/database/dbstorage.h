@@ -187,7 +187,7 @@ struct DBKey
 ///      get/flush report success through their return value; set/del are
 ///      best-effort and report nothing.
 ///   2. Construction/loading of a concrete storage throws DBStorageError; the
-///      factory boundary (Config::createDefaultDBStorage) catches and reports,
+///      factory boundary (Database::createDBStorage) catches and reports,
 ///      so a database that fails to open never half-exists.
 ///   3. Tooling built on top (dbutils, renlib import/export) throws
 ///      std::runtime_error; the command layer catches and reports.

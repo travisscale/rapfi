@@ -38,9 +38,6 @@ class SearchThread;
 namespace Evaluation {
 class Evaluator;
 }
-namespace Config {
-extern CandidateRange DefaultCandidateRange;  // declared here to avoid the config.h include
-}
 
 /// Iterate `pos` over every on-board (non-wall) cell, in ascending Pos order.
 #define FOR_EVERY_POSITION(board, pos) \
@@ -160,10 +157,15 @@ public:
         NO_EVAL_MULTI  ///< As NO_EVAL, but do not flip the side to move.
     };
 
-    /// Allocate a board of the given size and candidate range. The position is uninitialized
-    /// until newGame() is called.
+    /// Allocate a board of the given size using the configured default
+    /// candidate range (GeneralCfg.defaultCandidateRange). The position is
+    /// uninitialized until newGame() is called.
     /// @param boardSize Size of the board, in range [1, MAX_BOARD_SIZE].
-    explicit Board(int boardSize, CandidateRange candRange = Config::DefaultCandidateRange);
+    explicit Board(int boardSize);
+    /// Allocate a board of the given size and candidate range. The position is
+    /// uninitialized until newGame() is called.
+    /// @param boardSize Size of the board, in range [1, MAX_BOARD_SIZE].
+    Board(int boardSize, CandidateRange candRange);
     /// Clone a board from another and bind a search thread to the clone.
     /// @param other Board object to clone from.
     /// @param thread Search thread to bind (nullptr for no binding).

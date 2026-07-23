@@ -18,11 +18,11 @@
 
 #include "dbutils.h"
 
-#include "../config.h"
 #include "../core/string.h"
 #include "../game/board.h"
 #include "../game/scopedmove.h"
 #include "dbclient.h"
+#include "dbconfig.h"
 #include "parallelwalk.h"
 #include "renlib.h"
 
@@ -179,7 +179,7 @@ size_t mergeDatabase(DBStorage &dbDst, DBStorage &dbSrc, OverwriteRule owRule)
                 || checkOverwrite(oldRecord,
                                   dbRecord,
                                   owRule,
-                                  Config::DatabaseOverwriteExactBias,
+                                  DatabaseCfg.search.overwriteExactBias,
                                   0)) {
                 // Merge board texts.
                 dbRecord.copyBoardTextFrom(oldRecord, false);
@@ -267,16 +267,16 @@ size_t importLibToDatabase(DBStorage &dbDst, std::istream &libStream, Rule rule,
                     }
                 }
             }
-            else if (t[0] == Config::DatabaseLibBlackWinMark && board.sideToMove() == BLACK) {
+            else if (t[0] == DatabaseCfg.libfile.blackWinMark && board.sideToMove() == BLACK) {
                 newRecord.label = LABEL_WIN;
             }
-            else if (t[0] == Config::DatabaseLibWhiteWinMark && board.sideToMove() == WHITE) {
+            else if (t[0] == DatabaseCfg.libfile.whiteWinMark && board.sideToMove() == WHITE) {
                 newRecord.label = LABEL_WIN;
             }
-            else if (t[0] == Config::DatabaseLibBlackLoseMark && board.sideToMove() == BLACK) {
+            else if (t[0] == DatabaseCfg.libfile.blackLoseMark && board.sideToMove() == BLACK) {
                 newRecord.label = LABEL_LOSE;
             }
-            else if (t[0] == Config::DatabaseLibWhiteLoseMark && board.sideToMove() == WHITE) {
+            else if (t[0] == DatabaseCfg.libfile.whiteLoseMark && board.sideToMove() == WHITE) {
                 newRecord.label = LABEL_LOSE;
             }
             else if ((t[0] == 'v' || t[0] == 'm') && t.length() > 1) {
@@ -286,7 +286,7 @@ size_t importLibToDatabase(DBStorage &dbDst, std::istream &libStream, Rule rule,
                 newRecord.value = DBValue(t[0] == 'v' ? -value : value);
                 newRecord.setDepthBound(0, BOUND_EXACT);
             }
-            else if (board.ply() > 0 && !Config::DatabaseLibIgnoreBoardText) {
+            else if (board.ply() > 0 && !DatabaseCfg.libfile.ignoreBoardText) {
                 // Write parent record for board text, on the parent position.
                 ScopedRuleUndo rewind(board, rule);
                 DBClient       dbClient(dbDst, RECORD_MASK_TEXT);
@@ -294,13 +294,13 @@ size_t importLibToDatabase(DBStorage &dbDst, std::istream &libStream, Rule rule,
                     board,
                     rule,
                     rewind.lastMove(),
-                    LegacyFileCPToUTF8(t, Config::DatabaseLegacyFileCodePage));
+                    LegacyFileCPToUTF8(t, DatabaseCfg.legacyFileCodePage));
             }
         }
 
-        if (comment && !Config::DatabaseLibIgnoreComment) {
+        if (comment && !DatabaseCfg.libfile.ignoreComment) {
             std::string newCmt =
-                LegacyFileCPToUTF8(*comment, Config::DatabaseLegacyFileCodePage);
+                LegacyFileCPToUTF8(*comment, DatabaseCfg.legacyFileCodePage);
             replaceAll(newCmt, "\r\n", "\n");
 
             if (hasOldRecord) {

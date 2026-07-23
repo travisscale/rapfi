@@ -40,16 +40,6 @@ DBKey constructDBKey(const Board &board, Rule rule, TransformType *transType = n
 /// @param transType The pointer to acquire the applied transform type.
 void toSmallestDBKey(DBKey &key, TransformType *transType = nullptr);
 
-/// The rule to use when a overwrite might occur to a position.
-enum class OverwriteRule {
-    Disabled,               /// No overwrite is allowed (only null record gets overwritten)
-    Always,                 /// Always overwrite
-    BetterLabel,            /// Overwrite if new record has better label (more determined result)
-    BetterValue,            /// Overwrite if new record has more valuable value
-    BetterDepthBound,       /// Better label or better depthbound
-    BetterValueDepthBound,  /// Better label or more valuable value or better depthbound
-};
-
 /// Checks whether new record satisfy the overwrite condition
 /// Both oldRecord and newRecord should have valid label, value, depth, bound.
 bool checkOverwrite(const DBRecord &oldRecord,
@@ -57,7 +47,7 @@ bool checkOverwrite(const DBRecord &oldRecord,
                     OverwriteRule   owRule,
                     int             exactBias,
                     int             depthBoundBias);
-/// Overload using the configured default biases (Config::DatabaseOverwrite*Bias).
+/// Overload using the configured default biases (DatabaseCfg.search.overwrite*Bias).
 bool checkOverwrite(const DBRecord &oldRecord, const DBRecord &newRecord, OverwriteRule owRule);
 
 /// DBClient class is the interface for querying and saving results of positions.

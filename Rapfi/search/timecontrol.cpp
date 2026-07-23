@@ -18,12 +18,14 @@
 
 #include "timecontrol.h"
 
-#include "../config.h"
+#include "searchconfig.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cfloat>
 #include <cmath>
+
+using Search::TimeCfg;
 
 namespace {
 
@@ -47,8 +49,8 @@ float moveImportance(int ply)
 /// time grows exponentially with the serach depth.
 float timeDivisor(int depth)
 {
-    return Config::TimeDivisorBias
-           + Config::TimeDivisorScale * std::pow(float(depth), Config::TimeDivisorDepthPow);
+    return TimeCfg.timeDivisorBias
+           + TimeCfg.timeDivisorScale * std::pow(float(depth), TimeCfg.timeDivisorDepthPow);
 }
 
 }  // namespace
@@ -62,14 +64,14 @@ void TimeControl::init(Time turnTime, Time matchTime, Time matchTimeLeft, MovePa
         matchTimeLeft = std::numeric_limits<Time>::max();
 
     float movesToGo = std::max(params.movesLeft, 1);
-    maximumTime     = Time(matchTimeLeft / std::min(Config::MatchSpaceMin, movesToGo));
-    maximumTime     = std::max(std::min(turnTime, maximumTime) - Config::TurnTimeReserved, (Time)0);
-    ampleMatchTime  = turnTime * std::min(params.movesLeft, Config::MoveHorizon) < matchTimeLeft;
-    optimumTime     = Time(maximumTime * Config::AdvancedStopRatio);
+    maximumTime     = Time(matchTimeLeft / std::min(TimeCfg.matchSpaceMin, movesToGo));
+    maximumTime     = std::max(std::min(turnTime, maximumTime) - TimeCfg.turnTimeReserved, (Time)0);
+    ampleMatchTime  = turnTime * std::min(params.movesLeft, TimeCfg.moveHorizon) < matchTimeLeft;
+    optimumTime     = Time(maximumTime * TimeCfg.advancedStopRatio);
 
     if (!ampleMatchTime) {
-        Time match  = Time(matchTimeLeft / std::min(Config::MatchSpace, movesToGo));
-        Time turn   = Time(maximumTime / Config::AverageBranchFactor * moveImportance(params.ply));
+        Time match  = Time(matchTimeLeft / std::min(TimeCfg.matchSpace, movesToGo));
+        Time turn   = Time(maximumTime / TimeCfg.averageBranchFactor * moveImportance(params.ply));
         optimumTime = std::min(optimumTime, std::min(turn, match));
     }
 
@@ -85,14 +87,14 @@ bool TimeControl::checkStop(IterParams params, float &timeReduction) const
     // Calculate a optimum turn time scale factor based on bestmove changes,
     // bestmove stability and eval oscillation
     float valueDropped  = params.prevBestValue - params.bestValue;
-    float fallingFactor = Config::FallingFactorScale * valueDropped + Config::FallingFactorBias;
+    float fallingFactor = TimeCfg.fallingFactorScale * valueDropped + TimeCfg.fallingFactorBias;
     fallingFactor       = std::clamp(fallingFactor, 0.5f, 1.5f);
 
     // If the bestMove is stable over several iterations, reduce time accordingly
     int bestMoveStablePly = params.depth - params.lastBestMoveChangeDepth;
-    timeReduction         = 1.0 + Config::BestmoveStableReductionScale * bestMoveStablePly;
+    timeReduction         = 1.0 + TimeCfg.bestmoveStableReductionScale * bestMoveStablePly;
     float reduction =
-        std::pow(params.prevTimeReduction, Config::BestmoveStablePrevReductionPow) / timeReduction;
+        std::pow(params.prevTimeReduction, TimeCfg.bestmoveStablePrevReductionPow) / timeReduction;
 
     // Use part of the gained time from a previous stable move for the current move
     float bestMoveInstability = 1 + 2 * params.averageBestMoveChanges;

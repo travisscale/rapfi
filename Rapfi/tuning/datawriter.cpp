@@ -23,6 +23,7 @@
 #include "../core/hash.h"
 #include "../core/iohelper.h"
 #include "../core/utils.h"
+#include "../eval/scoretables.h"
 #include "../game/board.h"
 
 #include <cassert>

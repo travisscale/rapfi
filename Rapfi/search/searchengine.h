@@ -19,6 +19,7 @@
 #pragma once
 
 #include "../core/platform.h"
+#include "../eval/evalconfig.h"
 #include "searchcommon.h"
 #include "searchoutput.h"
 #include "timecontrol.h"
@@ -44,31 +45,31 @@ class Searcher;      // forward declaration
 class SearchThread;  // forward declaration
 class SearchEngine;  // forward declaration
 
-/// Database access parameters captured once per search from Config, so the
+/// Database access parameters captured once per search from DatabaseCfg, so the
 /// search node loop reads stable values without reaching into the config hub.
 /// (Pattern-setter for the Phase-4 per-module config structs.)
 struct DatabaseSearchParams
 {
-    bool readonlyMode;                   // Config::DatabaseReadonlyMode
-    bool mandatoryParentWrite;           // Config::DatabaseMandatoryParentWrite
-    int  queryPly;                       // Config::DatabaseQueryPly
-    int  queryPVIterPerPlyIncrement;     // Config::DatabaseQueryPVIterPerPlyIncrement
-    int  queryNonPVIterPerPlyIncrement;  // Config::DatabaseQueryNonPVIterPerPlyIncrement
-    int  queryResultDepthBoundBias;      // Config::DatabaseQueryResultDepthBoundBias
-    int  mateWritePly;                   // Config::DatabaseMateWritePly
-    int  mateWriteMinStep;               // Config::DatabaseMateWriteMinStep
-    int  mateWriteMinDepthExact;         // Config::DatabaseMateWriteMinDepthExact
-    int  mateWriteMinDepthNonExact;      // Config::DatabaseMateWriteMinDepthNonExact
-    int  pvWritePly;                     // Config::DatabasePVWritePly
-    int  pvWriteMinDepth;                // Config::DatabasePVWriteMinDepth
-    int  nonPVWritePly;                  // Config::DatabaseNonPVWritePly
-    int  nonPVWriteMinDepth;             // Config::DatabaseNonPVWriteMinDepth
-    int  writeValueRange;                // Config::DatabaseWriteValueRange
-    int  exactOverwritePly;              // Config::DatabaseExactOverwritePly
-    int  nonExactOverwritePly;           // Config::DatabaseNonExactOverwritePly
-    Database::OverwriteRule overwriteRule;  // Config::DatabaseOverwriteRule
+    bool readonlyMode;                   // DatabaseCfg.search.readonlyMode
+    bool mandatoryParentWrite;           // DatabaseCfg.search.mandatoryParentWrite
+    int  queryPly;                       // DatabaseCfg.search.queryPly
+    int  queryPVIterPerPlyIncrement;     // DatabaseCfg.search.queryPVIterPerPlyIncrement
+    int  queryNonPVIterPerPlyIncrement;  // DatabaseCfg.search.queryNonPVIterPerPlyIncrement
+    int  queryResultDepthBoundBias;      // DatabaseCfg.search.queryResultDepthBoundBias
+    int  mateWritePly;                   // DatabaseCfg.search.mateWritePly
+    int  mateWriteMinStep;               // DatabaseCfg.search.mateWriteMinStep
+    int  mateWriteMinDepthExact;         // DatabaseCfg.search.mateWriteMinDepthExact
+    int  mateWriteMinDepthNonExact;      // DatabaseCfg.search.mateWriteMinDepthNonExact
+    int  pvWritePly;                     // DatabaseCfg.search.pvWritePly
+    int  pvWriteMinDepth;                // DatabaseCfg.search.pvWriteMinDepth
+    int  nonPVWritePly;                  // DatabaseCfg.search.nonPVWritePly
+    int  nonPVWriteMinDepth;             // DatabaseCfg.search.nonPVWriteMinDepth
+    int  writeValueRange;                // DatabaseCfg.search.writeValueRange
+    int  exactOverwritePly;              // DatabaseCfg.search.exactOverwritePly
+    int  nonExactOverwritePly;           // DatabaseCfg.search.nonExactOverwritePly
+    Database::OverwriteRule overwriteRule;  // DatabaseCfg.search.overwriteRule
 
-    /// Capture the current Config::Database* knob values.
+    /// Capture the current DatabaseCfg.search knob values.
     static DatabaseSearchParams captureFromConfig();
 };
 
@@ -128,9 +129,7 @@ class SearchEngine
 {
 public:
     /// Type of the function that creates an evaluator instance.
-    using EvaluatorMaker = std::unique_ptr<Evaluation::Evaluator>(int              boardSize,
-                                                                  Rule             rule,
-                                                                  Numa::NumaNodeId numaId);
+    using EvaluatorMaker = Evaluation::EvaluatorMakerFunc;
 
 private:
     friend class SearchThread;
@@ -148,7 +147,7 @@ private:
 
     std::vector<std::unique_ptr<SearchThread>> threads_;
     std::atomic_bool                           terminate;
-    std::function<EvaluatorMaker>              evaluatorMaker;
+    EvaluatorMaker                             evaluatorMaker;
     std::unique_ptr<Searcher>                  searcherPtr;
     std::unique_ptr<Database::DBStorage>       dbStoragePtr;
 
@@ -173,7 +172,7 @@ public:
     ///     can be nullptr which means disable all usage of database.
     void setupDatabase(std::unique_ptr<Database::DBStorage> dbStorage);
     /// Setup evaluator maker for future evaluator creation.
-    void setupEvaluator(std::function<EvaluatorMaker> evaluatorMaker);
+    void setupEvaluator(EvaluatorMaker evaluatorMaker);
     /// Run a custom task on all threads and wait for them to finish.
     /// @param task The custom task to run in each thread.
     /// @param includeSelf If true, the task also runs in the calling thread

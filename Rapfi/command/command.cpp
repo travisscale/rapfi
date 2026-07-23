@@ -131,7 +131,7 @@ bool loadConfig()
                    "Must specify an external config!");
     }
 
-    if (success && Config::ClearHashAfterConfigLoaded)
+    if (success && Config::GeneralCfg.clearHashAfterConfigLoaded)
         Search::Engine.clear(true);
 
     return success;

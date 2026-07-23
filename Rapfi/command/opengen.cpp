@@ -21,6 +21,7 @@
 #include "../core/time.h"
 #include "../search/hashtable.h"
 #include "../search/opening.h"
+#include "../search/searchconfig.h"
 #include "../search/searchthread.h"
 #include "argutils.h"
 #include "command.h"
@@ -98,11 +99,11 @@ void Command::opengen(int argc, char *argv[])
 
     // Set message mode to none if silence search is enabled
     if (silence)
-        Config::MessageMode = MsgMode::NONE;
+        Config::GeneralCfg.messageMode = MsgMode::NONE;
 
     // Set number of iterations after special search condition
-    Config::NumIterationAfterMate         = 0;
-    Config::NumIterationAfterSingularRoot = 64;
+    Search::SearchCfg.numIterationAfterMate         = 0;
+    Search::SearchCfg.numIterationAfterSingularRoot = 64;
 
     // Start generating openings and write position strings to output stream
     Search::Engine.searcher()->setMemoryLimit(hashSizeMb * 1024);

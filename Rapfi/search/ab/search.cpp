@@ -29,6 +29,7 @@
 #include "../hashtable.h"
 #include "../movepick.h"
 #include "../opening.h"
+#include "../searchconfig.h"
 #include "../searchthread.h"
 #include "../skill.h"
 #include "parameter.h"
@@ -191,7 +192,7 @@ void ABSearcher::search(SearchThread &th)
     SearchThread     *mainThread = (&th == th.engine.main() ? th.engine.main() : nullptr);
 
     // Init search depth range
-    int maxDepth   = std::min(options.maxDepth, std::clamp(Config::MaxSearchDepth, 2, MAX_DEPTH));
+    int maxDepth   = std::min(options.maxDepth, std::clamp(SearchCfg.maxSearchDepth, 2, MAX_DEPTH));
     int startDepth = std::clamp(options.startDepth, 1, maxDepth);
 
     // Init random move picker and adjust max depth and multiPV
@@ -274,11 +275,11 @@ void ABSearcher::search(SearchThread &th)
 
         // Stop thinking if we are not in analysis mode, inPonder mode, or random move mode
         if (!options.isAnalysisMode() && !ctx.inPonder && !rmp.enabled()) {
-            if (isMate && sd.rootDepth - firstMateDepth >= Config::NumIterationAfterMate)
+            if (isMate && sd.rootDepth - firstMateDepth >= SearchCfg.numIterationAfterMate)
                 th.engine.stopThinking();
             else if (sd.singularRoot
                      && sd.rootDepth - firstSingularDepth
-                            >= Config::NumIterationAfterSingularRoot) {
+                            >= SearchCfg.numIterationAfterSingularRoot) {
                 ctx.markPonderingAvailable();
                 th.engine.stopThinking();
             }
@@ -418,7 +419,7 @@ void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue,
 
     // Reset aspiration window starting size if aspiration windows is enabled and
     // we are not in balance move mode. (no aspiration window for balance move mode).
-    if (depth >= ASPIRATION_DEPTH && Config::AspirationWindow
+    if (depth >= ASPIRATION_DEPTH && SearchCfg.aspirationWindow
         && !thisThread->options().balanceMode) {
         delta = nextAspirationWindowDelta(prevValue);
         alpha = std::max(prevValue - delta, -VALUE_INFINITE);

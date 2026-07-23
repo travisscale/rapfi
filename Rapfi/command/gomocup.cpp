@@ -20,16 +20,17 @@
 #include "../core/iohelper.h"
 #include "../core/utils.h"
 #include "../database/dbclient.h"
+#include "../database/dbconfig.h"
 #include "../database/dbutils.h"
 #include "../database/yxdbstorage.h"
 #include "../eval/eval.h"
+#include "../eval/evalconfig.h"
 #include "../eval/evaluator.h"
 #include "../game/board.h"
-#include "../search/ab/searcher.h"
 #include "../search/hashtable.h"
-#include "../search/mcts/searcher.h"
 #include "../search/movepick.h"
 #include "../search/opening.h"
+#include "../search/searcher.h"
 #include "../search/searchthread.h"
 #include "../tuning/tunemap.h"
 #include "command.h"
@@ -80,7 +81,7 @@ std::optional<Pos> parseLegalCoord(std::istream &is, Board &board)
     char comma;
     is >> x >> comma >> y;
 
-    Pos pos = inputCoordConvert(x, y, board.size(), Config::IOCoordMode);
+    Pos pos = inputCoordConvert(x, y, board.size(), Config::GeneralCfg.ioCoordMode);
     if (board.isLegal(pos)) {
         if (checkLastMoveIsNotPass(board))
             return std::nullopt;
@@ -106,15 +107,15 @@ void sendActionAndUpdateBoard(ActionType action, Pos bestMove)
 {
     if (action == ActionType::Move) {
         board->move(options.rule, bestMove);
-        std::cout << CoordText {bestMove, board->size(), Config::IOCoordMode} << std::endl;
+        std::cout << CoordText {bestMove, board->size(), Config::GeneralCfg.ioCoordMode} << std::endl;
     }
     else if (action == ActionType::Move2) {
         Pos move1 = Search::Engine.main()->rootMoves[0].pv[0];
         Pos move2 = Search::Engine.main()->rootMoves[0].pv[1];
         board->move(options.rule, move1);
         board->move(options.rule, move2);
-        std::cout << CoordText {move1, board->size(), Config::IOCoordMode} << ' '
-                  << CoordText {move2, board->size(), Config::IOCoordMode} << std::endl;
+        std::cout << CoordText {move1, board->size(), Config::GeneralCfg.ioCoordMode} << ' '
+                  << CoordText {move2, board->size(), Config::GeneralCfg.ioCoordMode} << std::endl;
     }
     else if (action == ActionType::Swap) {
         std::cout << "SWAP" << std::endl;
@@ -128,8 +129,8 @@ void sendActionAndUpdateBoard(ActionType action, Pos bestMove)
         Search::Engine.startThinking(*board, options, false, []() {
             Pos move1 = Search::Engine.main()->rootMoves[0].pv[0];
             Pos move2 = Search::Engine.main()->rootMoves[0].pv[1];
-            std::cout << CoordText {move1, board->size(), Config::IOCoordMode} << ' '
-                      << CoordText {move2, board->size(), Config::IOCoordMode} << std::endl;
+            std::cout << CoordText {move1, board->size(), Config::GeneralCfg.ioCoordMode} << ' '
+                      << CoordText {move2, board->size(), Config::GeneralCfg.ioCoordMode} << std::endl;
         });
     }
 }
@@ -145,14 +146,16 @@ void think(Board                             &board,
     options.swapable            = swapable;
     options.disableOpeningQuery = disableOpeningQuery;
 
-    if (Config::ReloadConfigEachMove)
-        loadConfig();
-
-    // If threads are pondering, stop them now and wait for them to finish
+    // If threads are pondering, stop them now and wait for them to finish.
+    // This must precede the config reload below: loadConfig quiesces the
+    // search threads without signaling them to stop.
     if (Search::Engine.ctx.inPonder) {
         Search::Engine.stopThinking();
         Search::Engine.waitForIdle();
     }
+
+    if (Config::GeneralCfg.reloadConfigEachMove)
+        loadConfig();
 
     thinking = true;
     Search::Engine.startThinking(board, options, false, [&, startTime = now()]() {
@@ -183,8 +186,8 @@ void setGUIMode()
     MESSAGEL("INFO MAX_THREAD_NUM 256");
     MESSAGEL("INFO MAX_HASH_SIZE 30");
     GUIMode = true;
-    if (Config::MessageMode == MsgMode::BRIEF)
-        Config::MessageMode = MsgMode::NORMAL;
+    if (Config::GeneralCfg.messageMode == MsgMode::BRIEF)
+        Config::GeneralCfg.messageMode = MsgMode::NORMAL;
 }
 
 void getOption()
@@ -224,7 +227,7 @@ void getOption()
         size_t memReservedKB = 0;
 
         if (token == "MAX_MEMORY") {
-            memReservedKB = Config::MemoryReservedMB[options.rule.rule] * 1024;
+            memReservedKB = Config::GeneralCfg.memoryReservedMB[options.rule.rule] * 1024;
             if (val == 0) {
                 maxMemSizeKB = 350 * 1024;  // use default gomocup max_memory
             }
@@ -257,10 +260,10 @@ void getOption()
         }
 
         // Resize TT if memory reserved is different for this rule.
-        if (Config::MemoryReservedMB[prevRule] != Config::MemoryReservedMB[options.rule.rule]) {
+        if (Config::GeneralCfg.memoryReservedMB[prevRule] != Config::GeneralCfg.memoryReservedMB[options.rule.rule]) {
             size_t maxMemSizeKB = Search::Engine.searcher()->getMemoryLimit()
-                                  + Config::MemoryReservedMB[prevRule] * 1024;
-            size_t memReservedKB = Config::MemoryReservedMB[options.rule.rule] * 1024;
+                                  + Config::GeneralCfg.memoryReservedMB[prevRule] * 1024;
+            size_t memReservedKB = Config::GeneralCfg.memoryReservedMB[options.rule.rule] * 1024;
             size_t memLimitKB    = maxMemSizeKB <= memReservedKB ? 1 : maxMemSizeKB - memReservedKB;
             Search::Engine.searcher()->setMemoryLimit(memLimitKB);
         }
@@ -360,7 +363,7 @@ void getOption()
     else if (token == "USEDATABASE") {
         std::cin >> val;
         if (val == 1)
-            Search::Engine.setupDatabase(Config::createDefaultDBStorage());
+            Search::Engine.setupDatabase(Database::createDBStorage(Database::DatabaseCfg));
         else
             Search::Engine.setupDatabase(nullptr);
     }
@@ -369,7 +372,7 @@ void getOption()
     /////////////////////////////////////////////////
     else if (token == "DATABASE_READONLY") {
         std::cin >> val;
-        Config::DatabaseReadonlyMode = val == 1;
+        Database::DatabaseCfg.search.readonlyMode = val == 1;
     }
     else if (token == "SWAPABLE") {
         std::cin >> val;
@@ -408,17 +411,17 @@ void getOption()
         }
     }
     else if (token == "EVALUATOR_DRAW_BLACK_WINRATE") {
-        std::cin >> Config::EvaluatorDrawBlackWinRate;
-        Config::EvaluatorDrawBlackWinRate =
-            std::clamp(Config::EvaluatorDrawBlackWinRate, 0.0f, 1.0f);
+        std::cin >> Evaluation::EvalCfg.drawBlackWinRate;
+        Evaluation::EvalCfg.drawBlackWinRate =
+            std::clamp(Evaluation::EvalCfg.drawBlackWinRate, 0.0f, 1.0f);
     }
     else if (token == "EVALUATOR_DRAW_RATIO") {
-        std::cin >> Config::EvaluatorDrawRatio;
-        Config::EvaluatorDrawRatio = std::clamp(Config::EvaluatorDrawRatio, 0.0f, 1.0f);
+        std::cin >> Evaluation::EvalCfg.drawRatio;
+        Evaluation::EvalCfg.drawRatio = std::clamp(Evaluation::EvalCfg.drawRatio, 0.0f, 1.0f);
     }
     else if (token == "SEARCH_TYPE") {
         std::cin >> str;
-        Search::Engine.setupSearcher(Config::createSearcher(str));
+        Search::Engine.setupSearcher(Search::createSearcher(str));
         Search::Engine.clear(true);
     }
     else {
@@ -476,9 +479,9 @@ void reloadConfig()
 void setDatabase()
 {
     auto databasePath = readPathFromInput();
-    if (!databasePath.empty() && !Config::DatabaseType.empty()) {
-        Config::DatabaseURL     = databasePath.u8string();
-        auto newDatabaseStorage = Config::createDefaultDBStorage();
+    if (!databasePath.empty() && !Database::DatabaseCfg.type.empty()) {
+        Database::DatabaseCfg.url     = databasePath.u8string();
+        auto newDatabaseStorage = Database::createDBStorage(Database::DatabaseCfg);
         if (newDatabaseStorage)
             Search::Engine.setupDatabase(std::move(newDatabaseStorage));
     }
@@ -583,7 +586,7 @@ void start()
     }
 
     if (!board || boardSize != board->size()) {
-        auto candidateRange = candRange.value_or(Config::DefaultCandidateRange);
+        auto candidateRange = candRange.value_or(Config::GeneralCfg.defaultCandidateRange);
         board               = std::make_unique<Board>(boardSize, candidateRange);
     }
 
@@ -721,7 +724,7 @@ void getBlock(bool remove = false)
         ss << coordStr;
         ss >> x >> comma >> y;
 
-        Pos pos = inputCoordConvert(x, y, board->size(), Config::IOCoordMode);
+        Pos pos = inputCoordConvert(x, y, board->size(), Config::GeneralCfg.ioCoordMode);
         if (!board->isInBoard(pos) || pos == Pos::PASS)
             ERRORL("Block coord is a pass or invalid.");
 
@@ -751,7 +754,7 @@ void showForbid()
         FOR_EVERY_EMPTY_POS(board, pos)
         {
             if (board->checkForbiddenPoint(pos)) {
-                auto [cx, cy] = outputCoordConvert(pos, board->size(), Config::IOCoordMode);
+                auto [cx, cy] = outputCoordConvert(pos, board->size(), Config::GeneralCfg.ioCoordMode);
                 std::cout << std::setfill('0') << std::setw(2) << cx << std::setfill('0')
                           << std::setw(2) << cy;
             }
@@ -844,7 +847,7 @@ void queryDatabaseAll(bool getPosition)
 
             // Print this position if it has DBRecord or board text
             if (printThisPos) {
-                auto [cx, cy] = outputCoordConvert(pos, board->size(), Config::IOCoordMode);
+                auto [cx, cy] = outputCoordConvert(pos, board->size(), Config::GeneralCfg.ioCoordMode);
                 MESSAGEL("DATABASE " << cx << ' ' << cy << ' ' << displayLabelValue << ' '
                                      << record.value << ' ' << record.depth() << ' '
                                      << int(record.bound()) << ' ' << int(!record.comment().empty())
@@ -855,7 +858,7 @@ void queryDatabaseAll(bool getPosition)
         MESSAGEL("DATABASE DONE");
 
         // Insert a new none record if no record is found at this position
-        if (!Config::DatabaseReadonlyMode) {
+        if (!Database::DatabaseCfg.search.readonlyMode) {
             DBRecord record;
             if (board->ply() > 0 && !dbClient.query(*board, options.rule, record))
                 dbClient.save(*board, options.rule, DBRecord {LABEL_NONE}, OverwriteRule::Disabled);
@@ -904,7 +907,7 @@ void editDatabaseTVD()
     std::cin >> updateMask >> newLabel >> newValue >> newDepth;
     getDatabasePosition();
 
-    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
+    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
         switch (newLabel) {
         case 'W': newLabel = LABEL_WIN; break;
         case 'L': newLabel = LABEL_LOSE; break;
@@ -929,7 +932,7 @@ void editDatabaseText()
     std::cin >> std::ws >> std::quoted(newText);
     getDatabasePosition();
 
-    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
+    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
         DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_TEXT);
         DBRecord record;
         if (!dbClient.query(*board, options.rule, record))
@@ -955,7 +958,7 @@ void editDatabaseBoardLabel()
     if (!pos.has_value())
         return;
 
-    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
+    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
         DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_TEXT);
         dbClient.setBoardText(*board, options.rule, *pos, ConsoleCPToUTF8(newText));
     }
@@ -1083,7 +1086,7 @@ void deleteDatabaseAll(bool getPosition)
     if (getPosition)
         getDatabasePosition();
 
-    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
+    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
         MESSAGEL("Deleting child records, this might take a while...");
         auto   startTime        = now();
         size_t sizeBeforeDelete = Search::Engine.dbStorage()->size();
@@ -1106,7 +1109,7 @@ void deleteDatabaseOne(bool getPosition)
     if (getPosition)
         getDatabasePosition();
 
-    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
+    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
         DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
         dbClient.del(*board, options.rule);
     }
@@ -1123,7 +1126,7 @@ void splitDatabase()
     auto databasePath = readPathFromInput();
     if (Search::Engine.dbStorage()) {
         std::string dbPathUTF8 = databasePath.u8string();
-        if (auto dbToSplit = Config::createDefaultDBStorage(dbPathUTF8)) {
+        if (auto dbToSplit = Database::createDBStorage(Database::DatabaseCfg, dbPathUTF8)) {
             auto   startTime  = now();
             size_t writeCount = ::Database::splitDatabase(*Search::Engine.dbStorage(),
                                                           *dbToSplit,
@@ -1141,10 +1144,10 @@ void mergeDatabase()
     auto databasePath = readPathFromInput();
     if (Search::Engine.dbStorage()) {
         std::string dbPathUTF8 = databasePath.u8string();
-        if (auto dbToMerge = Config::createDefaultDBStorage(dbPathUTF8)) {
+        if (auto dbToMerge = Database::createDBStorage(Database::DatabaseCfg, dbPathUTF8)) {
             size_t writeCount = mergeDatabase(*Search::Engine.dbStorage(),
                                               *dbToMerge,
-                                              Config::DatabaseOverwriteRule);
+                                              Database::DatabaseCfg.search.overwriteRule);
             MESSAGEL("Merged " << writeCount << " out of " << dbToMerge->size()
                                << " records into the database.");
         }
@@ -1172,9 +1175,9 @@ void swap2board()
             opening[2] = Pos(2, 4);
         }
 
-        std::cout << CoordText {opening[0], board->size(), Config::IOCoordMode} << ' '
-                  << CoordText {opening[1], board->size(), Config::IOCoordMode} << ' '
-                  << CoordText {opening[2], board->size(), Config::IOCoordMode} << std::endl;
+        std::cout << CoordText {opening[0], board->size(), Config::GeneralCfg.ioCoordMode} << ' '
+                  << CoordText {opening[1], board->size(), Config::GeneralCfg.ioCoordMode} << ' '
+                  << CoordText {opening[2], board->size(), Config::GeneralCfg.ioCoordMode} << std::endl;
     }
     else {
         think(*board, 1, Search::SearchOptions::BALANCE_NONE, true);

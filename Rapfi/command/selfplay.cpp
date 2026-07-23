@@ -20,6 +20,7 @@
 #include "../core/iohelper.h"
 #include "../core/utils.h"
 #include "../search/hashtable.h"
+#include "../search/searchconfig.h"
 #include "../search/searchthread.h"
 #include "../tuning/datawriter.h"
 #include "argutils.h"
@@ -307,10 +308,10 @@ void Command::selfplay(int argc, char *argv[])
 
     // Set message mode to none if silence search is enabled
     if (silence)
-        Config::MessageMode = MsgMode::NONE;
+        Config::GeneralCfg.messageMode = MsgMode::NONE;
     else
-        Config::MessageMode = MsgMode::BRIEF;
-    Config::AspirationWindow = true;
+        Config::GeneralCfg.messageMode = MsgMode::BRIEF;
+    Search::SearchCfg.aspirationWindow = true;
 
     // Set num threads and TT size
     Search::Engine.setNumThreads(numThreads);

@@ -18,9 +18,9 @@
 
 #include "dbclient.h"
 
-#include "../config.h"
 #include "../game/board.h"
 #include "../game/scopedmove.h"
+#include "dbconfig.h"
 #include "parallelwalk.h"
 
 #include <algorithm>
@@ -469,8 +469,8 @@ bool checkOverwrite(const DBRecord &oldRecord, const DBRecord &newRecord, Overwr
     return checkOverwrite(oldRecord,
                           newRecord,
                           owRule,
-                          Config::DatabaseOverwriteExactBias,
-                          Config::DatabaseOverwriteDepthBoundBias);
+                          DatabaseCfg.search.overwriteExactBias,
+                          DatabaseCfg.search.overwriteDepthBoundBias);
 }
 
 DBClient::DBClient(DBStorage   &storage,

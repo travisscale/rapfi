@@ -18,10 +18,10 @@
 
 #include "yxdbstorage.h"
 
-#include "../config.h"
 #include "../core/compressor.h"
 #include "../core/iohelper.h"
 #include "../core/utils.h"
+#include "dbconfig.h"
 #include "dbtypes.h"
 
 #include <cstring>
@@ -355,7 +355,7 @@ void YXDBStorage::load(std::istream &is, bool ignoreCorrupted)
                               : LegacyFileCPToUTF8(
                                     std::string {reinterpret_cast<char *>(&byteBuffer[5]),
                                                  static_cast<size_t>(numRecordBytes - 5)},
-                                    Config::DatabaseLegacyFileCodePage))
+                                    DatabaseCfg.legacyFileCodePage))
                     : std::string {}}));
 
     next_record:;

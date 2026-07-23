@@ -265,7 +265,7 @@ constexpr Pos applyTransform(Pos pos, int sizeX, int sizeY, TransformType trans)
 
 /// How protocol (x, y) integer pairs are remapped to/from internal board coordinates, so the
 /// engine can match different GUIs' coordinate orientations. The active mode is held by the
-/// configuration layer (`Config::IOCoordMode`) and passed explicitly to the conversion
+/// configuration layer (`Config::GeneralCfg.ioCoordMode`) and passed explicitly to the conversion
 /// helpers in iohelper.h.
 enum class CoordConvertionMode {
     NONE,     ///< No remapping.

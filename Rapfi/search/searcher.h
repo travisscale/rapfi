@@ -19,6 +19,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 
 namespace Search {
 
@@ -83,5 +84,11 @@ public:
     /// @return True if time is up, otherwise false.
     virtual bool checkTimeupCondition(const TimeControl &timectl) = 0;
 };
+
+/// Create a searcher instance by name ("alphabeta" or "mcts", case-insensitive).
+/// @param searcherName The name of the searcher. Empty string to use default.
+/// @return The pointer to the searcher. Can not be nullptr (unknown names fall
+///     back to the default alpha-beta searcher with an error message).
+std::unique_ptr<Searcher> createSearcher(std::string searcherName = "");
 
 }  // namespace Search

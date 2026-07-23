@@ -18,6 +18,8 @@
 
 #include "board.h"
 
+#include "../config.h"
+
 #include "../core/iohelper.h"
 #include "../core/pos.h"
 #include "../core/utils.h"
@@ -58,6 +60,8 @@ bool checkP4(const Board *board)
 }
 
 }  // namespace
+
+Board::Board(int boardSize) : Board(boardSize, Config::GeneralCfg.defaultCandidateRange) {}
 
 Board::Board(int boardSize, CandidateRange candRange)
     : boardSize(boardSize)

@@ -399,7 +399,7 @@ void loadWeightPair(Registry &registry,
         if (!contains(header.supportedBoardSizes, args.boardSize))
             throw UnsupportedBoardSizeError(args.boardSize);
 
-        if (Config::MessageMode != MsgMode::NONE) {
+        if (Config::GeneralCfg.messageMode != MsgMode::NONE) {
             MESSAGEL(archName << ": load weight from " << pathToConsoleString(args.weightPath));
             printLoadInfo = true;
         }

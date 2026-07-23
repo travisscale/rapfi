@@ -16,13 +16,12 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../config.h"
 #include "../core/iohelper.h"
 #include "../core/utils.h"
 #include "../database/dbclient.h"
+#include "../database/dbconfig.h"
 #include "../database/dbstorage.h"
 #include "../database/dbutils.h"
-#include "../database/yxdbstorage.h"
 #include "../game/board.h"
 #include "argutils.h"
 #include "command.h"
@@ -35,8 +34,6 @@
 using namespace Database;
 
 namespace {
-
-enum class DatabaseType { YixinDB };
 
 auto makeDBCreationOptions(std::string headline)
 {
@@ -62,32 +59,21 @@ auto makeDBCreationOptions(std::string headline)
     return options;
 }
 
-DatabaseType parseDatabaseType(std::string dbTypeStr)
-{
-    if (dbTypeStr == "yixindb")
-        return DatabaseType::YixinDB;
-    else
-        throw std::invalid_argument("unknown database type " + dbTypeStr);
-}
-
 std::unique_ptr<DBStorage> createDBStorage(const cxxopts::ParseResult &args)
 {
-    std::string databaseURL  = args["url"].as<std::string>();
-    std::string databaseType = args["type"].as<std::string>();
+    std::string databaseURL = args["url"].as<std::string>();
 
-    if (databaseType == "yixindb") {
-        auto yxdbStorage =
-            std::make_unique<YXDBStorage>(pathFromConsoleString(databaseURL),
-                                          args["yixindb-compressed-save"].as<bool>(),
-                                          args["yixindb-save-on-close"].as<bool>(),
-                                          args["yixindb-backup-on-save"].as<bool>(),
-                                          args["yixindb-ignore-corrupted"].as<bool>());
-        if (yxdbStorage->size() > 0)
-            MESSAGEL("Yixindb loaded " << yxdbStorage->size() << " entries from " << databaseURL);
-        return yxdbStorage;
-    }
-    else
-        throw std::invalid_argument("unknown database type " + databaseType);
+    DatabaseConfig cfg;
+    cfg.type                     = args["type"].as<std::string>();
+    cfg.yixindb.compressedSave   = args["yixindb-compressed-save"].as<bool>();
+    cfg.yixindb.saveOnClose      = args["yixindb-save-on-close"].as<bool>();
+    cfg.yixindb.numBackupsOnSave = args["yixindb-backup-on-save"].as<bool>();  // bool->int (true->1), as today
+    cfg.yixindb.ignoreCorrupted  = args["yixindb-ignore-corrupted"].as<bool>();
+
+    auto dbStorage = openDBStorage(cfg, pathFromConsoleString(databaseURL).u8string());
+    if (dbStorage->size() > 0)
+        MESSAGEL("Yixindb loaded " << dbStorage->size() << " entries from " << databaseURL);
+    return dbStorage;
 }
 
 std::unique_ptr<DBStorage> createDBStorageFromCmdline(std::string cmdline)
@@ -455,7 +441,7 @@ void Command::database(int argc, char *argv[])
             std::getline(is, cmdline);
             if (auto dbToMerge = createDBStorageFromCmdline(cmdline)) {
                 size_t writeCount =
-                    mergeDatabase(*dbStorage, *dbToMerge, Config::DatabaseOverwriteRule);
+                    mergeDatabase(*dbStorage, *dbToMerge, Database::DatabaseCfg.search.overwriteRule);
                 MESSAGEL("Merged " << writeCount << " out of " << dbToMerge->size()
                                    << " records into the database.");
             }

@@ -24,6 +24,7 @@
 #include "../hashtable.h"
 #include "../opening.h"
 #include "../searchcommon.h"
+#include "../searchconfig.h"
 #include "parameter.h"
 #include "searcher.h"
 
@@ -271,8 +272,8 @@ inline float puctSelectionValue(float    childUtility,
 
     // Reduce utility value for drawish child nodes for PUCT selection
     // Encourage exploration for less drawish child nodes
-    if (Config::DrawUtilityPenalty != 0)
-        Q -= Config::DrawUtilityPenalty * childDraw * (1 - parentDraw);
+    if (SearchCfg.drawUtilityPenalty != 0)
+        Q -= SearchCfg.drawUtilityPenalty * childDraw * (1 - parentDraw);
 
     // Account for virtual losses
     if (childVirtualVisits > 0)
@@ -486,7 +487,7 @@ void evaluateNode(Node &node, const SearchOptions &options, Board &board, int pl
     node.setNonTerminal(v.winLossRate(), v.draw());
 
     // If ExpandWhenFirstEvaluate mode is enabled, we expand the node immediately
-    if (Config::ExpandWhenFirstEvaluate)
+    if (SearchCfg.expandWhenFirstEvaluate)
         expandNode<Root>(node, options, board, ply);
 }
 
@@ -946,7 +947,7 @@ MCTSSearcher::MCTSSearcher() : Searcher(false)
 {
     graph.root          = nullptr;
     graph.globalNodeAge = 0;
-    nodeTable           = std::make_unique<NodeTable>(Config::NumNodeTableShardsPowerOfTwo);
+    nodeTable           = std::make_unique<NodeTable>(SearchCfg.numNodeTableShardsPowerOfTwo);
 }
 
 void MCTSSearcher::setMemoryLimit(size_t memorySizeKB)
@@ -983,8 +984,8 @@ void MCTSSearcher::clear(SearchEngine &pool, bool clearAllMemory)
     pool.waitForIdle();
 
     // Reset node table num shards if needed
-    if (nodeTable->getNumShards() != Config::NumNodeTableShardsPowerOfTwo)
-        nodeTable = std::make_unique<NodeTable>(Config::NumNodeTableShardsPowerOfTwo);
+    if (nodeTable->getNumShards() != SearchCfg.numNodeTableShardsPowerOfTwo)
+        nodeTable = std::make_unique<NodeTable>(SearchCfg.numNodeTableShardsPowerOfTwo);
 }
 
 const RootMove *MCTSSearcher::searchMain(SearchThread &th)
@@ -1033,7 +1034,7 @@ void MCTSSearcher::search(SearchThread &th)
     // Main search loop
     std::vector<Node *> selectedPath;
     while (!th.engine.isTerminating()) {
-        uint32_t newNumPlayouts = Config::MaxNumVisitsPerPlayout;
+        uint32_t newNumPlayouts = SearchCfg.maxNumVisitsPerPlayout;
 
         // Cap new number of playouts to the maximum num nodes to visit
         if (options.maxNodes) {
@@ -1053,19 +1054,19 @@ void MCTSSearcher::search(SearchThread &th)
             th.engine.ctx.checkExit(std::max(newNumNodes, 64u));
 
             bool printRootMoves = false;
-            if (Config::NodesToPrintMCTSRootmoves > 0) {
+            if (SearchCfg.nodesToPrintMCTSRootmoves > 0) {
                 uint64_t currentNumNodes = th.engine.nodesSearched();
                 uint64_t numElapsedNodes = currentNumNodes - scratch.lastOutputNodes;
 
-                if (numElapsedNodes >= Config::NodesToPrintMCTSRootmoves) {
+                if (numElapsedNodes >= SearchCfg.nodesToPrintMCTSRootmoves) {
                     scratch.lastOutputNodes = currentNumNodes;
                     printRootMoves          = true;
                 }
             }
-            if (Config::TimeToPrintMCTSRootmoves > 0) {
+            if (SearchCfg.timeToPrintMCTSRootmoves > 0) {
                 Time currentTime = now();
                 Time elapsedTime = currentTime - scratch.lastOutputTime;
-                if (elapsedTime >= Config::TimeToPrintMCTSRootmoves) {
+                if (elapsedTime >= SearchCfg.timeToPrintMCTSRootmoves) {
                     scratch.lastOutputTime = currentTime;
                     printRootMoves         = true;
                 }
@@ -1079,7 +1080,7 @@ void MCTSSearcher::search(SearchThread &th)
             }
 
             if (th.rootMoves.size() == 1
-                && th.engine.nodesSearched() >= Config::NumNodesAfterSingularRoot)
+                && th.engine.nodesSearched() >= SearchCfg.numNodesAfterSingularRoot)
                 th.engine.stopThinking();
         }
     }
@@ -1191,7 +1192,7 @@ void MCTSSearcher::updateRootMovesData(SearchThread &th)
     int                   bestChildIndex =
         selectBestmoveOfChildNode(*graph.root, edgeIndices, selectionValues, lcbValues, true);
     uint32_t maxNumRootMovesToPrint =
-        std::max<uint32_t>(th.options().multiPV, Config::MaxNonPVRootmovesToPrint);
+        std::max<uint32_t>(th.options().multiPV, SearchCfg.maxNonPVRootmovesToPrint);
 
     for (RootMove &rm : th.rootMoves) {
         rm.selectionValue = std::numeric_limits<float>::lowest();

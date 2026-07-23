@@ -19,10 +19,15 @@
 #include "searchengine.h"
 
 #include "../config.h"
+#include "../core/iohelper.h"
+#include "../core/utils.h"
 #include "../database/dbclient.h"
+#include "../database/dbconfig.h"
 #include "../database/dbstorage.h"
 #include "../eval/evaluator.h"
 #include "../game/board.h"
+#include "ab/searcher.h"
+#include "mcts/searcher.h"
 #include "movepick.h"
 #include "opening.h"
 #include "searcher.h"
@@ -113,32 +118,53 @@ void generateRootMoves(SearchThread &th)
     }
 }
 
+const char *DefaultSearcherName = "alphabeta";
+
 }  // namespace
 
 /// Global search engine
 SearchEngine Engine;
 
+std::unique_ptr<Searcher> createSearcher(std::string searcherName)
+{
+    if (searcherName.empty())
+        searcherName = DefaultSearcherName;
+
+    upperInplace(searcherName);
+
+    if (searcherName == "ALPHABETA")
+        return std::make_unique<AB::ABSearcher>();
+    if (searcherName == "MCTS")
+        return std::make_unique<MCTS::MCTSSearcher>();
+
+    ERRORL("Unknown search type: " << searcherName
+                                   << ", must be one of [alphabeta, mcts]."
+                                      " Use alphabeta searcher as default.");
+    return std::make_unique<AB::ABSearcher>();
+}
+
 DatabaseSearchParams DatabaseSearchParams::captureFromConfig()
 {
+    const auto          &cfg = Database::DatabaseCfg.search;
     DatabaseSearchParams p;
-    p.readonlyMode                  = Config::DatabaseReadonlyMode;
-    p.mandatoryParentWrite          = Config::DatabaseMandatoryParentWrite;
-    p.queryPly                      = Config::DatabaseQueryPly;
-    p.queryPVIterPerPlyIncrement    = Config::DatabaseQueryPVIterPerPlyIncrement;
-    p.queryNonPVIterPerPlyIncrement = Config::DatabaseQueryNonPVIterPerPlyIncrement;
-    p.queryResultDepthBoundBias     = Config::DatabaseQueryResultDepthBoundBias;
-    p.mateWritePly                  = Config::DatabaseMateWritePly;
-    p.mateWriteMinStep              = Config::DatabaseMateWriteMinStep;
-    p.mateWriteMinDepthExact        = Config::DatabaseMateWriteMinDepthExact;
-    p.mateWriteMinDepthNonExact     = Config::DatabaseMateWriteMinDepthNonExact;
-    p.pvWritePly                    = Config::DatabasePVWritePly;
-    p.pvWriteMinDepth               = Config::DatabasePVWriteMinDepth;
-    p.nonPVWritePly                 = Config::DatabaseNonPVWritePly;
-    p.nonPVWriteMinDepth            = Config::DatabaseNonPVWriteMinDepth;
-    p.writeValueRange               = Config::DatabaseWriteValueRange;
-    p.exactOverwritePly             = Config::DatabaseExactOverwritePly;
-    p.nonExactOverwritePly          = Config::DatabaseNonExactOverwritePly;
-    p.overwriteRule                 = Config::DatabaseOverwriteRule;
+    p.readonlyMode                  = cfg.readonlyMode;
+    p.mandatoryParentWrite          = cfg.mandatoryParentWrite;
+    p.queryPly                      = cfg.queryPly;
+    p.queryPVIterPerPlyIncrement    = cfg.queryPVIterPerPlyIncrement;
+    p.queryNonPVIterPerPlyIncrement = cfg.queryNonPVIterPerPlyIncrement;
+    p.queryResultDepthBoundBias     = cfg.queryResultDepthBoundBias;
+    p.mateWritePly                  = cfg.mateWritePly;
+    p.mateWriteMinStep              = cfg.mateWriteMinStep;
+    p.mateWriteMinDepthExact        = cfg.mateWriteMinDepthExact;
+    p.mateWriteMinDepthNonExact     = cfg.mateWriteMinDepthNonExact;
+    p.pvWritePly                    = cfg.pvWritePly;
+    p.pvWriteMinDepth               = cfg.pvWriteMinDepth;
+    p.nonPVWritePly                 = cfg.nonPVWritePly;
+    p.nonPVWriteMinDepth            = cfg.nonPVWriteMinDepth;
+    p.writeValueRange               = cfg.writeValueRange;
+    p.exactOverwritePly             = cfg.exactOverwritePly;
+    p.nonExactOverwritePly          = cfg.nonExactOverwritePly;
+    p.overwriteRule                 = cfg.overwriteRule;
     return p;
 }
 
@@ -267,7 +293,7 @@ void SearchEngine::setupDatabase(std::unique_ptr<Database::DBStorage> dbStorage)
     dbStoragePtr = std::move(dbStorage);
 }
 
-void SearchEngine::setupEvaluator(std::function<EvaluatorMaker> maker)
+void SearchEngine::setupEvaluator(EvaluatorMaker maker)
 {
     if (!threads_.empty()) {
         waitForIdle();
@@ -411,7 +437,7 @@ void SearchEngine::runSearch(SearchThread &main)
 void SearchEngine::clear(bool clearAllMemory)
 {
     if (threads_.empty())
-        setNumThreads(Config::DefaultThreadNum);
+        setNumThreads(Config::GeneralCfg.defaultThreadNum);
 
     if (searcher())
         searcher()->clear(*this, clearAllMemory);
@@ -422,7 +448,7 @@ SearchEngine::SearchEngine()
     ctx.engine = this;
 
     // Set default searcher
-    setupSearcher(Config::createSearcher());
+    setupSearcher(createSearcher());
 }
 
 SearchEngine::~SearchEngine()
