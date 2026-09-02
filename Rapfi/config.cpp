@@ -34,6 +34,7 @@
 #include <fstream>
 #include <limits>
 #include <optional>
+#include <sstream>
 #ifdef MULTI_THREADING
     #include <thread>
 #endif
@@ -392,6 +393,19 @@ void Config::readModel(const cpptoml::table &t, PendingConfig &pending)
     const char *RuleName[] = {"freestyle", "standard", "renju"};
 
     std::string modelPath = t.get_as<std::string>("binary_file").value_or("");
+#ifdef RAPFI_VCF_ENGINE
+    if (!modelPath.empty()) {
+        // VCF builds do not depend on the packaged neural/classical model files.
+        // Those files may use a different table layout than this source revision;
+        // use the source-embedded classical tables for deterministic VCF ordering.
+        std::istringstream internalStream(InternalConfig);
+        auto              internalConfig = cpptoml::parser(internalStream).parse();
+        if (auto internalModel = internalConfig->get_table("model")) {
+            readModel(*internalModel, pending);
+            return;
+        }
+    }
+#endif
     if (!modelPath.empty()) {
         if (!Command::loadModelFromFile(modelPath))
             throw std::runtime_error("failed to load classic model file");
@@ -482,9 +496,11 @@ void Config::readModel(const cpptoml::table &t, PendingConfig &pending)
     Evaluation::ScalingFactor =
         (float)t.get_as<double>("scaling_factor").value_or(Evaluation::ScalingFactor);
 
+#ifndef RAPFI_VCF_ENGINE
     // Read evaluator
     if (auto evaluator = t.get_table("evaluator"))
         readEvaluator(*evaluator, pending);
+#endif
 }
 
 /// Read evaluator table in the config.
