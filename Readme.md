@@ -35,7 +35,7 @@ You can download a pre-built package of the Rapfi engine and the Yixinboard GUI 
 
 
 
-## Project Structure
+## Project  Structure
 
 This repository contains the following files and several related subprojects:
 
