@@ -82,6 +82,25 @@ template <Rule Rule, NodeType NT>
 Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth = 0.0f);
 void vcfRootSearch(Rule rule, Board &board, SearchStack *ss);
 
+#ifdef RAPFI_VCF_ENGINE
+/// Detect only wins that are valid in a continuous-four search. In particular, do not treat
+/// standalone three-based quick-win patterns as a VCF proof.
+template <Rule Rule>
+Value vcfOnlyWinCheck(const Board &board, int ply)
+{
+    Color self = board.sideToMove(), oppo = ~self;
+
+    if (board.p4Count(self, A_FIVE))
+        return mate_in(ply + 1);
+    if (board.p4Count(oppo, A_FIVE) > 1)
+        return mated_in(ply + 2);
+    if (board.p4Count(self, B_FLEX4))
+        return mate_in(ply + 3);
+
+    return VALUE_ZERO;
+}
+#endif
+
 }  // namespace
 
 void ABSearchData::clearData(SearchThread &th)
@@ -1647,7 +1666,11 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
         return Evaluation::evaluate<Rule>(board, alpha, beta);
 
     // Check for immediate winning
+#ifdef RAPFI_VCF_ENGINE
+    if ((value = vcfOnlyWinCheck<Rule>(board, ss->ply)) != VALUE_ZERO) {
+#else
     if ((value = quickWinCheck<Rule>(board, ss->ply, beta)) != VALUE_ZERO) {
+#endif
         // Do not return mate that longer than maxMoves option
         if (board.nonPassMoveCount() + mate_step(value, ss->ply) > thisThread->options().maxMoves)
             value = getDrawValue(board, thisThread->options(), ss->ply);
@@ -1819,6 +1842,15 @@ Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     Color    self = board.sideToMove(), oppo = ~self;
     uint16_t oppo5 = board.p4Count(oppo, A_FIVE);  // opponent five
     Value    value;
+
+#ifdef RAPFI_VCF_ENGINE
+    // A defender that can complete a five wins immediately. If the attacker has two five
+    // completions, one forced block cannot stop the VCF.
+    if (board.p4Count(self, A_FIVE))
+        return mate_in(ss->ply + 1);
+    if (oppo5 > 1)
+        return mated_in(ss->ply + 2);
+#endif
 
     // Update selDepth (selDepth counts from 1, ply from 0)
     if (PvNode && thisThread->selDepth <= ss->ply)

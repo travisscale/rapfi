@@ -214,9 +214,13 @@ MovePicker::MovePicker(Rule rule, const Board &board, ExtraArgs<MovePicker::QVCF
     : board(board)
     , mainHistory(nullptr)
     , rule(rule)
+#ifdef RAPFI_VCF_ENGINE
+    , allowPlainB4InVCF(true)
+#else
     , allowPlainB4InVCF(
           args.depth >= DEPTH_QVCF_FULL
           || (args.previousSelfP4[0] >= D_BLOCK4_PLUS && args.previousSelfP4[1] >= D_BLOCK4_PLUS))
+#endif
     , hasPolicy(false)
     , useNormalizedPolicy(false)
     , normalizedPolicyTemp(1.0f)
@@ -444,6 +448,12 @@ top:
 
     case QVCF_MOVES:
         curMove = moves;
+#ifdef RAPFI_VCF_ENGINE
+        // The dedicated VCF engine must be exhaustive: a valid continuation may be an ordinary
+        // block-four far from the last attacker move, so do not use the normal local-neighbor
+        // shortcut here.
+        endMove = generateVCFMoves(rule, board, curMove);
+#else
         {
             Pos selfLast = board.getLastActualMoveOfSide(board.sideToMove());
             endMove =
@@ -454,6 +464,7 @@ top:
                                                                     RANGE_SQUARE2_LINE4.data(),
                                                                     RANGE_SQUARE2_LINE4.size());
         }
+#endif
 
         scoreAllMoves<BALANCED>();
         fastPartialSort(curMove, endMove, 0, ScoredMove::ScoreComparator {});
