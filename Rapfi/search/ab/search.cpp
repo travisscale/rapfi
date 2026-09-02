@@ -183,8 +183,37 @@ const RootMove *ABSearcher::searchMain(SearchThread &th)
 
     // Select best thread according to eval and completed depth when needed
     SearchThread *bestThread = &th;
-    if (!opts.vcfOnly && opts.multiPV == 1 && !SkillMovePicker(opts.strengthLevel).enabled()
-        && !opts.balanceMode) {
+    if (opts.vcfOnly) {
+        ABSearchData *mainData = th.searchDataAs<ABSearchData>();
+
+        // Every VCF thread starts from a different root move. Merge any completed
+        // result back into the main thread after all searches have stopped.
+        for (size_t i = 1; i < th.engine.size(); ++i) {
+            SearchThread &worker = *th.engine[i];
+            th.selDepth          = std::max(th.selDepth, worker.selDepth);
+            mainData->completedDepth =
+                std::max(mainData->completedDepth.load(std::memory_order_relaxed),
+                         worker.searchDataAs<ABSearchData>()->completedDepth.load(
+                             std::memory_order_relaxed));
+
+            for (const RootMove &workerMove : worker.rootMoves) {
+                if (workerMove.value == VALUE_NONE)
+                    continue;
+
+                auto mainMove = std::find(th.rootMoves.begin(),
+                                          th.rootMoves.end(),
+                                          workerMove.pv[0]);
+                if (mainMove != th.rootMoves.end()
+                    && (mainMove->value == VALUE_NONE || workerMove.value > mainMove->value)) {
+                    *mainMove = workerMove;
+                }
+            }
+        }
+
+        sortRootMoves(th.rootMoves.begin(), th.rootMoves.end(), false);
+    }
+    else if (opts.multiPV == 1 && !SkillMovePicker(opts.strengthLevel).enabled()
+             && !opts.balanceMode) {
         bestThread = pickBestThread(th.engine);
     }
 
@@ -230,8 +259,7 @@ void ABSearcher::search(SearchThread &th)
     SearchThread     *mainThread = (&th == th.engine.main() ? th.engine.main() : nullptr);
 
     if (options.vcfOnly) {
-        if (mainThread)
-            vcfRootSearch(options.rule, *th.board, stackArray.rootStack());
+        vcfRootSearch(options.rule, *th.board, stackArray.rootStack());
         return;
     }
 
@@ -1919,10 +1947,14 @@ void vcfRootSearch(Board &board, SearchStack *ss)
     searchData->rootDepth = 1;
     thisThread->selDepth  = 1;
 
-    for (RootMove &rootMove : thisThread->rootMoves) {
+    const size_t rootMoveCount = thisThread->rootMoves.size();
+    const size_t firstRootMove = rootMoveCount ? thisThread->id % rootMoveCount : 0;
+
+    for (size_t searched = 0; searched < rootMoveCount; ++searched) {
         if (thisThread->engine.isTerminating())
             break;
 
+        RootMove &rootMove = thisThread->rootMoves[(firstRootMove + searched) % rootMoveCount];
         Pos      move        = rootMove.pv[0];
         Pattern4 movePattern = board.pattern4(move, self);
         if (movePattern < E_BLOCK4
@@ -1949,6 +1981,9 @@ void vcfRootSearch(Board &board, SearchStack *ss)
             board.undo<Rule>();
         }
 
+        if (value == VALUE_NONE && thisThread->engine.isTerminating())
+            break;
+
         bool provenVCF = value >= VALUE_MATE_IN_MAX_PLY;
         rootMove.value = provenVCF ? value : VALUE_MATED_IN_MAX_PLY;
         rootMove.numNodes +=
@@ -1959,6 +1994,11 @@ void vcfRootSearch(Board &board, SearchStack *ss)
         if (provenVCF) {
             for (Pos *pvMove = (ss + 1)->pv; *pvMove != Pos::NONE; ++pvMove)
                 rootMove.pv.push_back(*pvMove);
+
+            // A complete VCF proof is sufficient. Stop the other staggered searches
+            // instead of continuing to enumerate alternative winning roots.
+            thisThread->engine.stopThinking();
+            break;
         }
     }
 

@@ -113,8 +113,6 @@ void think(Board                             &board,
     options.disableOpeningQuery = true;
     options.pondering           = false;
     options.vcfOnly             = true;
-    options.timeLimit           = false;
-    options.maxNodes            = 0;
 #endif
 
     // If threads are pondering, stop them now and wait for them to finish.
