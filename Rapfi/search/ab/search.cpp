@@ -94,7 +94,10 @@ Value vcfOnlyWinCheck(const Board &board, int ply)
         return mate_in(ply + 1);
     if (board.p4Count(oppo, A_FIVE) > 1)
         return mated_in(ply + 2);
-    if (board.p4Count(self, B_FLEX4))
+    // An open four is only an immediate VCF win when the opponent does not already
+    // have a direct five completion.  In that case the next move must still be
+    // searched so that only a four which also removes the opponent's threat is kept.
+    if (board.p4Count(self, B_FLEX4) && !board.p4Count(oppo, A_FIVE))
         return mate_in(ply + 3);
 
     return VALUE_ZERO;
