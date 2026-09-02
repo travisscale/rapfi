@@ -131,6 +131,7 @@ endif()
 option(NO_MULTI_THREADING "Disable multi-threading" OFF)
 option(NO_COMMAND_MODULES "Disable command modules" OFF)
 option(NO_PREFETCH "Disable prefetch in search" OFF)
+option(BUILD_VCF_ENGINE "Build the dedicated continuous-four VCF engine" OFF)
 
 option(USE_SSE  "Enable SSE2/SSSE3/SSE4.1 instruction" ${DEFAULT_USE_SSE})
 option(USE_AVX2 "Enable AVX2/FMA instruction" ${DEFAULT_USE_AVX2})
@@ -317,7 +318,12 @@ add_executable(rapfi
     ${CORE_SOURCES}
     $<$<NOT:$<BOOL:${NO_COMMAND_MODULES}>>:${MODULE_SOURCES}>
     ${HEADERS})
-set_target_properties(rapfi PROPERTIES OUTPUT_NAME "pbrain-rapfi")
+if(BUILD_VCF_ENGINE)
+    set_target_properties(rapfi PROPERTIES OUTPUT_NAME "VCFengine")
+    target_compile_definitions(rapfi PRIVATE RAPFI_VCF_ENGINE=1)
+else()
+    set_target_properties(rapfi PROPERTIES OUTPUT_NAME "pbrain-rapfi")
+endif()
 
 # external libraries
 add_subdirectory(external/cpptoml)

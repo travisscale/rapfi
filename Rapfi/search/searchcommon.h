@@ -117,6 +117,8 @@ struct SearchOptions
     bool disableOpeningQuery = false;
     /// Enable background pondering after each search.
     bool pondering = false;
+    /// Restrict the engine to continuous-four forced-win search.
+    bool vcfOnly = false;
     /// Enable time control information to terminate search.
     bool timeLimit = false;
 

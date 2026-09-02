@@ -81,11 +81,15 @@ void generateRootMoves(SearchThread &th)
                           *th.board,
                           MovePicker::ExtraArgs<MovePicker::ROOT> {});
     while (Pos m = movePicker()) {
+        if (th.options().vcfOnly
+            && th.board->pattern4(m, th.board->sideToMove()) < E_BLOCK4) {
+            continue;
+        }
         addMoveToRootMoves(m);
     }
 
     // If all legal moves are blocked, we select all candidate moves as root moves
-    if (th.rootMoves.empty() && th.options().blockMoves.size() > 0) {
+    if (!th.options().vcfOnly && th.rootMoves.empty() && th.options().blockMoves.size() > 0) {
         std::unordered_set<Pos> cands;
         FOR_EVERY_CAND_POS(th.board, pos)
         {
@@ -127,6 +131,9 @@ SearchEngine Engine;
 
 std::unique_ptr<Searcher> createSearcher(std::string searcherName)
 {
+#ifdef RAPFI_VCF_ENGINE
+    return std::make_unique<AB::ABSearcher>();
+#else
     if (searcherName.empty())
         searcherName = DefaultSearcherName;
 
@@ -141,6 +148,7 @@ std::unique_ptr<Searcher> createSearcher(std::string searcherName)
                                    << ", must be one of [alphabeta, mcts]."
                                       " Use alphabeta searcher as default.");
     return std::make_unique<AB::ABSearcher>();
+#endif
 }
 
 DatabaseSearchParams DatabaseSearchParams::captureFromConfig()

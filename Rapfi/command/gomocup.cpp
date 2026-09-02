@@ -106,6 +106,17 @@ void think(Board                             &board,
     options.swapable            = swapable;
     options.disableOpeningQuery = disableOpeningQuery;
 
+#ifdef RAPFI_VCF_ENGINE
+    options.multiPV             = 1;
+    options.balanceMode         = Search::SearchOptions::BALANCE_NONE;
+    options.swapable            = false;
+    options.disableOpeningQuery = true;
+    options.pondering           = false;
+    options.vcfOnly             = true;
+    options.timeLimit           = false;
+    options.maxNodes            = 0;
+#endif
+
     // If threads are pondering, stop them now and wait for them to finish.
     // This must precede the config reload below: loadConfig quiesces the
     // search threads without signaling them to stop.

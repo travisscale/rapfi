@@ -80,6 +80,7 @@ template <Rule Rule, NodeType NT>
 Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth = 0.0f);
 template <Rule Rule, NodeType NT>
 Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth = 0.0f);
+void vcfRootSearch(Rule rule, Board &board, SearchStack *ss);
 
 }  // namespace
 
@@ -126,7 +127,7 @@ const RootMove *ABSearcher::searchMain(SearchThread &th)
     Pos   dbWinMove  = Pos::NONE;
     Value dbWinValue = VALUE_NONE;
     int   dbWinDepth = 0;
-    if (th.dbClient) {
+    if (th.dbClient && !opts.vcfOnly) {
         auto childRecords = th.dbClient->queryChildren(*th.board, opts.rule);
 
         Pos   bestMove      = Pos::NONE;
@@ -160,8 +161,10 @@ const RootMove *ABSearcher::searchMain(SearchThread &th)
 
     // Select best thread according to eval and completed depth when needed
     SearchThread *bestThread = &th;
-    if (opts.multiPV == 1 && !SkillMovePicker(opts.strengthLevel).enabled() && !opts.balanceMode)
+    if (!opts.vcfOnly && opts.multiPV == 1 && !SkillMovePicker(opts.strengthLevel).enabled()
+        && !opts.balanceMode) {
         bestThread = pickBestThread(th.engine);
+    }
 
     if (opts.balanceMode == SearchOptions::BALANCE_NONE && dbWinMove
         && bestThread->rootMoves[0].value < VALUE_MATE_IN_MAX_PLY) {
@@ -203,6 +206,12 @@ void ABSearcher::search(SearchThread &th)
     float             timeReduction = 1.0f, totalBestMoveChanges = 0.0f;
     int               firstMateDepth = 0, firstSingularDepth = 0;
     SearchThread     *mainThread = (&th == th.engine.main() ? th.engine.main() : nullptr);
+
+    if (options.vcfOnly) {
+        if (mainThread)
+            vcfRootSearch(options.rule, *th.board, stackArray.rootStack());
+        return;
+    }
 
     // Init search depth range
     int maxDepth   = std::min(options.maxDepth, std::clamp(SearchCfg.maxSearchDepth, 2, MAX_DEPTH));
@@ -1861,6 +1870,76 @@ Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     assert(value > -VALUE_INFINITE && value < VALUE_INFINITE
            || thisThread->engine.isTerminating());
     return value;
+}
+
+template <Rule Rule>
+void vcfRootSearch(Board &board, SearchStack *ss)
+{
+    SearchThread *thisThread = board.thisThread();
+    ABSearchData *searchData = thisThread->searchDataAs<ABSearchData>();
+    Color         self       = board.sideToMove();
+
+    searchData->multiPv   = 1;
+    searchData->pvIdx     = 0;
+    searchData->rootDepth = 1;
+    thisThread->selDepth  = 1;
+
+    for (RootMove &rootMove : thisThread->rootMoves) {
+        if (thisThread->engine.isTerminating())
+            break;
+
+        Pos      move        = rootMove.pv[0];
+        Pattern4 movePattern = board.pattern4(move, self);
+        if (movePattern < E_BLOCK4
+            || (Rule == Rule::RENJU && self == BLACK && board.checkForbiddenPoint(move))) {
+            rootMove.value = VALUE_MATED_IN_MAX_PLY;
+            continue;
+        }
+
+        uint64_t nodesBefore = thisThread->numNodes.load(std::memory_order_relaxed);
+        ss->currentMove      = move;
+        ss->moveCount        = 1;
+        ss->moveP4[BLACK]    = board.pattern4(move, BLACK);
+        ss->moveP4[WHITE]    = board.pattern4(move, WHITE);
+        (ss + 1)->pv[0]      = Pos::NONE;
+
+        Value value;
+        if (movePattern == A_FIVE) {
+            value = mate_in(1);
+        }
+        else {
+            board.move<Rule>(move);
+            value = -vcfdefend<Rule, PV>(
+                board, ss + 1, -VALUE_INFINITE, VALUE_INFINITE, 0.0f);
+            board.undo<Rule>();
+        }
+
+        bool provenVCF = value >= VALUE_MATE_IN_MAX_PLY;
+        rootMove.value = provenVCF ? value : VALUE_MATED_IN_MAX_PLY;
+        rootMove.numNodes +=
+            thisThread->numNodes.load(std::memory_order_relaxed) - nodesBefore;
+        rootMove.selDepth = thisThread->selDepth;
+        rootMove.pv.resize(1);
+
+        if (provenVCF) {
+            for (Pos *pvMove = (ss + 1)->pv; *pvMove != Pos::NONE; ++pvMove)
+                rootMove.pv.push_back(*pvMove);
+        }
+    }
+
+    sortRootMoves(thisThread->rootMoves.begin(), thisThread->rootMoves.end(), false);
+    searchData->completedDepth = std::max(1, thisThread->selDepth);
+    searchData->rootDepth      = searchData->completedDepth;
+}
+
+void vcfRootSearch(Rule rule, Board &board, SearchStack *ss)
+{
+    switch (rule) {
+    default:
+    case Rule::FREESTYLE: vcfRootSearch<Rule::FREESTYLE>(board, ss); break;
+    case Rule::STANDARD: vcfRootSearch<Rule::STANDARD>(board, ss); break;
+    case Rule::RENJU: vcfRootSearch<Rule::RENJU>(board, ss); break;
+    }
 }
 
 }  // namespace
