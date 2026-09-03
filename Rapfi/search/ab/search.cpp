@@ -1721,6 +1721,13 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     int     ttDepth = (int)DEPTH_LOWER_BOUND;
     bool    ttHit   = TT.probe(posKey, ttValue, ttEval, ttIsPv, ttBound, ttMove, ttDepth, ss->ply);
 
+    // Never reuse search sentinels as VCF results. Older interrupted searches could have left one
+    // in the shared transposition table; accepting it here would reintroduce a false VCF win.
+    if (ttHit
+        && (ttValue == VALUE_NONE || ttValue == -VALUE_NONE || ttValue == VALUE_INFINITE
+            || ttValue == -VALUE_INFINITE))
+        ttHit = false;
+
     // Check for an early TT cutoff (for all types of nodes)
     if (ttHit && ttDepth >= depth && (!PvNode || !thisThread->isMainThread())  // Show full PV
     ) {
@@ -1807,13 +1814,17 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
         // Step 8. Make and search the move
         board.move<Rule>(move);
 
-        // Call defence-side vcf search
-        value = -vcfdefend<Rule, NT>(board, ss + 1, -beta, -alpha, depth - 1);
+        // Call defence-side vcf search. Preserve search sentinels across the negamax sign change;
+        // VALUE_NONE is not a game value and must never become a positive winning score.
+        Value childValue = vcfdefend<Rule, NT>(board, ss + 1, -beta, -alpha, depth - 1);
+        value            = (childValue == VALUE_NONE || childValue == -VALUE_NONE)
+                               ? VALUE_NONE
+                               : -childValue;
 
         board.undo<Rule>();
 
         // Check if a stop occurred, we discard search result by returning none value
-        if (thisThread->engine.isTerminating())
+        if (value == VALUE_NONE || thisThread->engine.isTerminating())
             return VALUE_NONE;
 
         // Step 9. Check for a new best move
@@ -1923,9 +1934,15 @@ Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
 
         // Call attack-side vcf search
         // Note that we do not reduce depth for vcf defence move.
-        value = -vcfsearch<Rule, NT>(board, ss + 1, -beta, -alpha, depth);
+        Value childValue = vcfsearch<Rule, NT>(board, ss + 1, -beta, -alpha, depth);
+        value            = (childValue == VALUE_NONE || childValue == -VALUE_NONE)
+                               ? VALUE_NONE
+                               : -childValue;
 
         board.undo<Rule>();
+
+        if (value == VALUE_NONE)
+            return VALUE_NONE;
 
         // Update pv in PV node
         if (PvNode)
@@ -1987,8 +2004,12 @@ void vcfRootSearch(Board &board, SearchStack *ss)
             board.undo<Rule>();
         }
 
-        if (value == VALUE_NONE && thisThread->engine.isTerminating())
-            break;
+        if (value == VALUE_NONE || value == -VALUE_NONE) {
+            if (thisThread->engine.isTerminating())
+                break;
+            rootMove.value = VALUE_MATED_IN_MAX_PLY;
+            continue;
+        }
 
         bool provenVCF = value >= VALUE_MATE_IN_MAX_PLY;
         rootMove.value = provenVCF ? value : VALUE_MATED_IN_MAX_PLY;
