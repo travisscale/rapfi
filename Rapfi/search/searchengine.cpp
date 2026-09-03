@@ -202,9 +202,16 @@ void SearchContext::checkExit(uint32_t elapsedCalls)
     else
         callsCnt = 1024;
 
-    // Do not stop searching in pondering mode
+    // Do not stop searching in pondering mode. The dedicated VCF engine must not accept a
+    // time-truncated search as a VCF proof; it runs until a complete proof is available or the
+    // caller explicitly sends STOP.
     if (inPonder.load(std::memory_order_relaxed))
         return;
+
+#ifdef RAPFI_VCF_ENGINE
+    if (options.vcfOnly)
+        return;
+#endif
 
     // Check if we have reached node/time limits
     if (options.maxNodes && engine->nodesSearched() >= options.maxNodes

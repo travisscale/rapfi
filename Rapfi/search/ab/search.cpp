@@ -1680,17 +1680,25 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
         thisThread->selDepth = ss->ply + 1;
 
     // Step 2. Check for immediate draw and winning
-    // Check if we reach the time limit
+    // Check if we reach the time limit. The dedicated VCF engine must finish a proof before it
+    // returns a move; a time-truncated branch is not a valid VCF result.
+#ifndef RAPFI_VCF_ENGINE
     if (thisThread->isMainThread())
         thisThread->engine.ctx.checkExit();
+#endif
 
     // Check if the board has been filled or we have reached the max game ply.
     if (board.movesLeft() == 0 || board.nonPassMoveCount() >= thisThread->options().maxMoves)
         return getDrawValue(board, thisThread->options(), ss->ply);
 
     // Check if we reached the max ply
-    if (ss->ply >= MAX_PLY)
+    if (ss->ply >= MAX_PLY) {
+#ifdef RAPFI_VCF_ENGINE
+        return mated_in(ss->ply + 1);
+#else
         return Evaluation::evaluate<Rule>(board, alpha, beta);
+#endif
+    }
 
     // Check for immediate winning
 #ifdef RAPFI_VCF_ENGINE
@@ -1901,9 +1909,16 @@ Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
         thisThread->selDepth = ss->ply + 1;
 
     // Step 2. Check for immediate evaluation, draw and winning
-    // Return evaluation immediately if there is no vcf threat
-    if (!oppo5)
+    // In a dedicated VCF proof, an attacker move that does not leave a new five completion is
+    // a failed line. Falling back to the normal evaluator here can turn a broken sequence into a
+    // false continuation after the opponent has interrupted the attack with a four.
+    if (!oppo5) {
+#ifdef RAPFI_VCF_ENGINE
+        return mate_in(ss->ply + 1);
+#else
         return Evaluation::evaluate<Rule>(board, alpha, beta);
+#endif
+    }
 
     // Check if the board has been filled or we have reached the max game ply.
     if (board.movesLeft() == 0 || board.nonPassMoveCount() >= thisThread->options().maxMoves)
@@ -2022,12 +2037,9 @@ void vcfRootSearch(Board &board, SearchStack *ss)
             for (Pos *pvMove = (ss + 1)->pv; *pvMove != Pos::NONE; ++pvMove)
                 rootMove.pv.push_back(*pvMove);
 
-            // This result has already passed the complete VCF recursion, including every legal
-            // defence at each forcing move. Stop the other root searches now; continuing to
-            // enumerate alternatives only repeats the expensive proof and can make a valid
-            // position appear hung.
-            thisThread->engine.stopThinking();
-            break;
+            // Keep searching the remaining root moves. A dedicated VCF engine must compare all
+            // completely proven candidates so a first, longer or incorrectly ordered forcing
+            // move cannot hide a shorter valid continuation.
         }
     }
 
