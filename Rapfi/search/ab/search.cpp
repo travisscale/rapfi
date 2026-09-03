@@ -1944,13 +1944,17 @@ void vcfRootSearch(Board &board, SearchStack *ss)
     thisThread->selDepth  = 1;
 
     const size_t rootMoveCount = thisThread->rootMoves.size();
-    const size_t firstRootMove = rootMoveCount ? thisThread->id % rootMoveCount : 0;
+    const size_t threadCount   = thisThread->engine.size();
+    const size_t firstRootMove = threadCount ? thisThread->id % threadCount : 0;
 
-    for (size_t searched = 0; searched < rootMoveCount; ++searched) {
+    // Partition root moves between threads. The previous wrapped loop made every thread search
+    // the complete root list, multiplying the strict VCF proof cost by the thread count and making
+    // complex positions appear to hang.
+    for (size_t rootIndex = firstRootMove; rootIndex < rootMoveCount; rootIndex += threadCount) {
         if (thisThread->engine.isTerminating())
             break;
 
-        RootMove &rootMove = thisThread->rootMoves[(firstRootMove + searched) % rootMoveCount];
+        RootMove &rootMove = thisThread->rootMoves[rootIndex];
         Pos      move        = rootMove.pv[0];
         Pattern4 movePattern = board.pattern4(move, self);
         if (movePattern < E_BLOCK4
