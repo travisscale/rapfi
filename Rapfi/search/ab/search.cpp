@@ -1834,6 +1834,12 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
         }
     }
 
+    // In dedicated VCF search, having no forcing move is a proven VCF failure. Do not leave the
+    // -VALUE_INFINITE sentinel here: vcfdefend() negates the child result, which would otherwise
+    // turn this sentinel into a false positive VCF win at the root.
+    if (moveCount == 0)
+        bestValue = mated_in(ss->ply + 1);
+
     // Step 10. Save TT entry for this position
     TT.store(posKey,
              bestValue,
