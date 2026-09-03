@@ -1995,9 +1995,12 @@ void vcfRootSearch(Board &board, SearchStack *ss)
             for (Pos *pvMove = (ss + 1)->pv; *pvMove != Pos::NONE; ++pvMove)
                 rootMove.pv.push_back(*pvMove);
 
-            // Keep searching the remaining root moves. A VCF result is accepted only after
-            // every forcing continuation has been verified; stopping at the first proof can
-            // select a longer or less stable line merely because it was ordered first.
+            // This result has already passed the complete VCF recursion, including every legal
+            // defence at each forcing move. Stop the other root searches now; continuing to
+            // enumerate alternatives only repeats the expensive proof and can make a valid
+            // position appear hung.
+            thisThread->engine.stopThinking();
+            break;
         }
     }
 
