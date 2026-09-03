@@ -83,8 +83,9 @@ Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
 void vcfRootSearch(Rule rule, Board &board, SearchStack *ss);
 
 #ifdef RAPFI_VCF_ENGINE
-/// Detect only wins that are valid in a continuous-four search. In particular, do not treat
-/// standalone three-based quick-win patterns as a VCF proof.
+/// Detect only wins that are already complete at the current position. Every four threat,
+/// including an open four, must go through vcfdefend() so the defender's immediate win and the
+/// complete forced continuation are checked before the result is accepted as a VCF proof.
 template <Rule Rule>
 Value vcfOnlyWinCheck(const Board &board, int ply)
 {
@@ -94,11 +95,6 @@ Value vcfOnlyWinCheck(const Board &board, int ply)
         return mate_in(ply + 1);
     if (board.p4Count(oppo, A_FIVE) > 1)
         return mated_in(ply + 2);
-    // An open four is only an immediate VCF win when the opponent does not already
-    // have a direct five completion.  In that case the next move must still be
-    // searched so that only a four which also removes the opponent's threat is kept.
-    if (board.p4Count(self, B_FLEX4) && !board.p4Count(oppo, A_FIVE))
-        return mate_in(ply + 3);
 
     return VALUE_ZERO;
 }
@@ -1995,10 +1991,9 @@ void vcfRootSearch(Board &board, SearchStack *ss)
             for (Pos *pvMove = (ss + 1)->pv; *pvMove != Pos::NONE; ++pvMove)
                 rootMove.pv.push_back(*pvMove);
 
-            // A complete VCF proof is sufficient. Stop the other staggered searches
-            // instead of continuing to enumerate alternative winning roots.
-            thisThread->engine.stopThinking();
-            break;
+            // Keep searching the remaining root moves. A VCF result is accepted only after
+            // every forcing continuation has been verified; stopping at the first proof can
+            // select a longer or less stable line merely because it was ordered first.
         }
     }
 

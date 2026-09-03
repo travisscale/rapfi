@@ -214,13 +214,9 @@ MovePicker::MovePicker(Rule rule, const Board &board, ExtraArgs<MovePicker::QVCF
     : board(board)
     , mainHistory(nullptr)
     , rule(rule)
-#ifdef RAPFI_VCF_ENGINE
-    , allowPlainB4InVCF(true)
-#else
     , allowPlainB4InVCF(
           args.depth >= DEPTH_QVCF_FULL
           || (args.previousSelfP4[0] >= D_BLOCK4_PLUS && args.previousSelfP4[1] >= D_BLOCK4_PLUS))
-#endif
     , hasPolicy(false)
     , useNormalizedPolicy(false)
     , normalizedPolicyTemp(1.0f)
@@ -228,14 +224,6 @@ MovePicker::MovePicker(Rule rule, const Board &board, ExtraArgs<MovePicker::QVCF
     Color self = board.sideToMove(), oppo = ~self;
     bool  ttmValid;
 
-#ifdef RAPFI_VCF_ENGINE
-    // The dedicated VCF search must keep selecting our own forcing fours even when
-    // the previous attack order has left an opponent five completion.  A move that
-    // fails to remove that threat is rejected by the VCF search after it is played;
-    // switching to a pure defence move here would hide better attacking orders.
-    stage    = QVCF_TT;
-    ttmValid = board.pattern4(args.ttMove, self) >= E_BLOCK4;
-#else
     if (board.p4Count(oppo, A_FIVE)) {
         stage    = DEFENDFIVE_TT;
         ttmValid = board.pattern4(args.ttMove, oppo) == A_FIVE;
@@ -244,7 +232,6 @@ MovePicker::MovePicker(Rule rule, const Board &board, ExtraArgs<MovePicker::QVCF
         stage    = QVCF_TT;
         ttmValid = board.pattern4(args.ttMove, self) >= E_BLOCK4;
     }
-#endif
 
     // check legality for defence ttmove
     ttmValid = ttmValid && board.isLegal(args.ttMove);
